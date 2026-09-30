@@ -88,7 +88,7 @@ Agentic-AI-Data-Migration/
 
 ### Prerequisites
 
-- Python 3.11+ (3.12 recommended — some C-extension deps have no prebuilt wheels for newer Python versions yet)
+- **Python 3.12** — required, not just recommended. `pyproject.toml` accepts `^3.11`, but on a fresh machine with only a newer Python (3.13/3.14) preinstalled, Poetry will silently pick that interpreter and then fail building C-extension deps (`oracledb`, `psycopg2-binary`, `pyspark`) with "Microsoft Visual C++ 14.0 or greater is required" — those packages have no prebuilt wheels yet for the newest Python. Install 3.12 explicitly (e.g. `winget install --id Python.Python.3.12` on Windows) even if a newer Python is already present.
 - Poetry 1.7.0+
 - Docker & Docker Compose
 - AWS Account with Bedrock access (Nova Pro + Titan Embeddings)
@@ -101,7 +101,19 @@ git clone https://github.com/your-org/Agentic-AI-Data-Migration.git
 cd Agentic-AI-Data-Migration
 ```
 
-### 2. Build the CrackSQL Editable Package
+### 2. Pin Poetry to the Python 3.12 Interpreter
+
+Do this **before** installing dependencies — Poetry otherwise defaults to whatever `python`/`py` resolves to first, which may be a newer, incompatible version:
+
+```powershell
+py -3.12 --version               # confirm 3.12 is installed
+poetry env use py -3.12          # Windows; use `poetry env use python3.12` on macOS/Linux
+poetry env info                  # verify the active venv is on 3.12
+```
+
+If you already ran `poetry install`/`poetry env use` with the wrong interpreter, remove the bad env first: `poetry env remove --all` then repeat the steps above.
+
+### 3. Build the CrackSQL Editable Package
 
 The `cracksql` dependency in `pyproject.toml` points at a generated, gitignored
 build directory — `poetry install` fails on a fresh clone until this runs first:
@@ -112,13 +124,15 @@ python tool_adapters/cracksql_adapter/vendor/CrackSQL/build_editable.py
 
 Re-run this after pulling changes to `tool_adapters/cracksql_adapter/vendor/CrackSQL/backend/`.
 
-### 3. Install Python Dependencies
+### 4. Install Python Dependencies
 
 ```bash
 poetry install
 ```
 
-### 4. Configure Environment
+If this fails with a lock-file error ("pyproject.toml changed significantly since poetry.lock was last generated" or a Poetry-version incompatibility), run `poetry lock --no-update` once, then retry `poetry install`.
+
+### 5. Configure Environment
 
 ```bash
 cp .env.example .env
@@ -135,7 +149,7 @@ BEDROCK_MODEL_ID=amazon.nova-pro-v1:0
 BEDROCK_EMBEDDING_MODEL_ID=amazon.titan-embed-text-v2:0
 ```
 
-### 5. Start Local Database Stack
+### 6. Start Local Database Stack
 
 ```bash
 docker-compose up -d
@@ -150,13 +164,13 @@ The following services will be available:
 - **SeaTunnel**: bulk-load engine, runs in its own container (`infra/docker/seatunnel/`)
 - **pgAdmin**: http://localhost:5050 (admin@example.com / pgadmin_dev_password)
 
-### 6. Initialize the CrackSQL Knowledge Base (required for Phase 4 schema translation)
+### 7. Initialize the CrackSQL Knowledge Base (required for Phase 4 schema translation)
 
 ```bash
 poetry run python scripts/init_cracksql_kb.py  # one-time, idempotent
 ```
 
-### 7. Build the SeaTunnel Docker Image (required for Phase 5 data migration)
+### 8. Build the SeaTunnel Docker Image (required for Phase 5 data migration)
 
 ```powershell
 ./infra/docker/seatunnel/fetch_jdbc_drivers.ps1   # downloads JDBC driver jars (not committed to git)
@@ -164,14 +178,14 @@ docker compose build seatunnel
 docker compose up -d seatunnel
 ```
 
-### 8. Set Up Pre-commit Hooks
+### 9. Set Up Pre-commit Hooks
 
 ```bash
 pre-commit install
 pre-commit run --all-files
 ```
 
-### 9. Run Tests
+### 10. Run Tests
 
 ```bash
 poetry run pytest tests/unit/ -v
@@ -347,7 +361,23 @@ docker-compose logs postgres-metadata
 
 ### Python import errors / build failures on Windows
 
-If `poetry install` fails building C-extension deps (`oracledb`, `psycopg2`, `pyspark`, etc.) with "Microsoft Visual C++ 14.0 or greater is required", check that a prebuilt wheel exists for your Python version on PyPI. If not, install Python 3.12 (`winget install --id Python.Python.3.12`) and recreate the venv rather than installing MSVC Build Tools.
+If `poetry install` fails building C-extension deps (`oracledb`, `psycopg2`, `pyspark`, etc.) with "Microsoft Visual C++ 14.0 or greater is required", Poetry is using the wrong (too new) Python interpreter — see Quick Start step 2. Fix:
+
+```powershell
+poetry env remove --all
+poetry env use py -3.12
+poetry install
+```
+
+Don't chase individual package pins or install MSVC Build Tools — installing Python 3.12 and repointing Poetry at it is faster and more reliable.
+
+### `poetry install` fails with a directory-source / "does not exist" error for `cracksql`
+
+The `cracksql` dependency is built locally, not fetched — run Quick Start step 3 (`build_editable.py`) before `poetry install`. If you ran `poetry install` first and it partially failed, re-run step 3 then `poetry install` again.
+
+### `poetry install` fails with a lock-file / content-hash error
+
+Run `poetry lock --no-update` (preserves existing resolved versions, just refreshes the hash) then `poetry install` again.
 
 ### SeaTunnel jobs fail to connect
 
