@@ -1,6 +1,6 @@
 # Implementation Plan — Agentic AI-Powered Database Migration Platform
 
-> Derived from [architecture.md](./architecture.md), [Capstone_Proposal.md](./Capstone_Proposal.md), and [human_plan.md](./human_plan.md).
+> Derived from [architecture.md](./docs/architecture.md) and [Capstone_Proposal.md](./Capstone_Proposal.md).
 > Scope: full any-to-any Oracle/MySQL/PostgreSQL support, full production stack (Terraform/EKS/Bedrock/LangSmith/Prometheus/Grafana).
 > Team: 2-4 engineers. Duration: 10 weeks (fits within an 8-12 week window; compress by dropping stretch items if needed).
 > Each phase ends with a demo-able increment and a defined Definition of Done (DoD).
@@ -164,7 +164,7 @@ On a 2-person team, merge roles: (Platform+AI) and (Data+DevOps).
 **Goal:** Everything works together as one coherent product, documented and demoable.
 
 - Full end-to-end dry run: Discover → Analyse → Plan → Transform → Generate → Validate → Test → Approve → Migrate → Verify, across at least two different dialect pairs (e.g. Oracle→PostgreSQL and MySQL→PostgreSQL) to prove the any-to-any claim.
-- Write/update `docs/adr/` for major decisions (retry policy, adapter contract, checkpointing choice, dialect symmetry).
+- Document major decisions (retry policy, adapter contract, checkpointing choice, dialect symmetry) in `docs/architecture.md`.
 - Produce migration risk/execution reports (sample output) and architecture diagram export for deliverables.
 - Record final demonstration video per [Capstone_Proposal.md deliverables](./Capstone_Proposal.md#expected-deliverables).
 - Final review against the Capstone evaluation criteria: working assistant, end-to-end workflow, production-ready quality.

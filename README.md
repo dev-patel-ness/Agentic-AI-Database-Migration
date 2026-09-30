@@ -1,6 +1,20 @@
 # Agentic AI-Powered Database Migration Platform
 
-A production-grade AI-assisted database migration platform supporting Oracle, MySQL, and PostgreSQL. This system orchestrates end-to-end database migrations using LangGraph, Bedrock AI, and domain-specific tool adapters.
+A production-grade AI-assisted database migration platform supporting **any-to-any** migration between Oracle, MySQL, and PostgreSQL. The system orchestrates end-to-end database migrations using LangGraph, AWS Bedrock, and domain-specific tool adapters (CrackSQL, Apache SeaTunnel, OpenRewrite, Aider, kubectl, Terraform).
+
+## Project Status
+
+| Phase | Description | Status |
+|---|---|---|
+| 0 | Foundations & environment setup | ✅ Complete |
+| 1 | Orchestration skeleton & shared state | ✅ Complete |
+| 2 | Dialect plugins & discovery | ✅ Complete |
+| 3 | Knowledge base & planner agent | ✅ Complete |
+| 4 | Schema & logic translation (CrackSQL + Bedrock) | ✅ Complete, live-verified |
+| 5 | Data migration (Apache SeaTunnel bulk load + DDL apply) | ✅ Complete, live-verified |
+| 6-10 | Code refactoring, validation, deployment, observability, final integration | 🔲 Not started |
+
+See [plan.md](plan.md) for the full phase-by-phase roadmap and [docs/architecture.md](docs/architecture.md) for system design.
 
 ## Overview
 
@@ -8,10 +22,10 @@ This project implements an agentic AI system that:
 - **Discovers** database schemas across source and target databases
 - **Assesses** complexity, risk, and compatibility issues
 - **Plans** migrations with human oversight
-- **Translates** DDL and business logic across database dialects
-- **Migrates** data with CDC support
+- **Translates** DDL and business logic across database dialects (via CrackSQL + Bedrock)
+- **Migrates** data with bulk load (via Apache SeaTunnel)
 - **Validates** correctness and completeness
-- **Tests** migrated applications
+- **Refactors** application code for the new dialect
 - **Deploys** with automated rollback capability
 - **Observes** the entire process with traces, metrics, and dashboards
 
@@ -30,39 +44,40 @@ Agentic-AI-Data-Migration/
 ├── apps/                   # User-facing applications
 │   ├── api-fastapi/        # REST API gateway
 │   └── ui-streamlit/       # Interactive dashboard
-├── dialects/               # Database dialect plugins
-│   ├── base.py            # Dialect abstract contract
-│   ├── oracle/            # Oracle dialect
-│   ├── mysql/             # MySQL dialect
-│   └── postgresql/        # PostgreSQL dialect
-├── orchestrator/           # LangGraph state machine
-│   ├── graph.py           # Main orchestration graph
-│   ├── state.py           # Shared state schema
-│   └── checkpointer.py    # Checkpoint persistence
-├── knowledge_base/         # RAG system for migration rules
-│   ├── ingestion/         # Document loading & embedding
-│   └── retrievers/        # Similarity search
-├── tool_adapters/          # External tool integrations
-│   ├── base.py            # Adapter abstract contract
-│   ├── cracksql_adapter/  # SQL translation
-│   ├── openrewrite_adapter/ # Code refactoring
-│   ├── aider_adapter/     # LLM-guided edits
-│   ├── seatunnel_adapter/ # Data migration engine
-│   ├── terraform_adapter/ # Infrastructure automation
-│   ├── kubectl_adapter/   # Kubernetes orchestration
-│   └── ...
-├── docs/                   # Architecture & decision records
-│   ├── architecture.md    # System design
-│   └── adr/              # Architecture Decision Records
-├── infra/                  # Infrastructure as Code
-│   ├── docker/            # Docker Compose configs
-│   ├── kubernetes/        # K8s manifests
-│   └── terraform/         # Terraform modules
-├── tests/                  # Test suites
-│   ├── unit/             # Unit tests
-│   ├── integration/       # Integration tests
-│   └── e2e/              # End-to-end tests
-└── observability/          # Monitoring & tracing
+├── dialects/                # Database dialect plugins
+│   ├── base.py              # Dialect abstract contract
+│   ├── connections.py       # Shared connection helpers
+│   ├── oracle/              # Oracle dialect
+│   ├── mysql/               # MySQL dialect
+│   └── postgresql/          # PostgreSQL dialect
+├── orchestrator/             # LangGraph state machine
+│   ├── graph.py              # Main orchestration graph
+│   ├── state.py              # Shared state schema
+│   └── checkpointer.py       # Checkpoint persistence
+├── knowledge_base/           # RAG system for migration rules
+│   ├── ingestion/            # Document loading & embedding
+│   └── retrievers/           # Similarity search
+├── tool_adapters/            # External tool integrations
+│   ├── base.py               # Adapter abstract contract
+│   ├── schema_extractor_adapter/ # DDL export & catalog
+│   ├── cracksql_adapter/     # SQL/DDL translation
+│   ├── seatunnel_adapter/    # Bulk data migration
+│   ├── openrewrite_adapter/  # Code refactoring
+│   ├── aider_adapter/        # LLM-guided edits
+│   ├── checksum_adapter/     # Data validation
+│   ├── terraform_adapter/    # Infrastructure automation
+│   └── kubectl_adapter/      # Kubernetes orchestration
+├── docs/                     # Architecture documentation
+│   └── architecture.md       # System design
+├── infra/                    # Infrastructure as Code
+│   ├── docker/                # Docker Compose configs & sample DB init scripts
+│   ├── k8s/                   # Kubernetes manifests
+│   └── terraform/             # Terraform modules
+├── tests/                     # Test suites
+│   ├── unit/                  # Unit tests
+│   ├── integration/            # Integration tests
+│   └── e2e/                    # End-to-end tests
+└── observability/             # Monitoring & tracing
     ├── grafana-dashboards/
     └── langsmith/
 ```
@@ -71,10 +86,10 @@ Agentic-AI-Data-Migration/
 
 ### Prerequisites
 
-- Python 3.11+
-- Poetry (or pip)
+- Python 3.11+ (3.12 recommended — some C-extension deps have no prebuilt wheels for newer Python versions yet)
+- Poetry 1.7.0+
 - Docker & Docker Compose
-- AWS Account with Bedrock access
+- AWS Account with Bedrock access (Nova Pro + Titan Embeddings)
 - Git
 
 ### 1. Clone and Setup Repository
@@ -87,64 +102,52 @@ cd Agentic-AI-Data-Migration
 ### 2. Install Python Dependencies
 
 ```bash
-# Using Poetry
 poetry install
-
-# Or using pip
-pip install -r requirements.txt
 ```
 
 ### 3. Configure Environment
 
 ```bash
-# Copy the example env file
 cp .env.example .env
+```
 
-# Edit .env with your AWS credentials and local database settings
-# Required AWS credentials:
-#   - AWS_ACCESS_KEY_ID
-#   - AWS_SECRET_ACCESS_KEY
-#   - AWS_REGION
-#   - BEDROCK_MODEL_ID (default: amazon.nova-pro-v1:0)
+Edit `.env` with your AWS credentials and local database settings. Minimum required:
+
+```env
+AWS_ACCESS_KEY_ID=your_key_here
+AWS_SECRET_ACCESS_KEY=your_secret_here
+AWS_REGION=us-east-1
+
+BEDROCK_MODEL_ID=amazon.nova-pro-v1:0
+BEDROCK_EMBEDDING_MODEL_ID=amazon.titan-embed-text-v2:0
 ```
 
 ### 4. Start Local Database Stack
 
 ```bash
-# Start all local databases (PostgreSQL, MySQL, Oracle)
 docker-compose up -d
-
-# Verify services are running
 docker-compose ps
-
-# Check database connectivity
-docker-compose exec postgres-metadata psql -U postgres -d migration_metadata -c "SELECT version();"
 ```
 
 The following services will be available:
 - **PostgreSQL Metadata**: `postgresql://postgres@localhost:5432/migration_metadata`
 - **PostgreSQL Sample**: `postgresql://postgres@localhost:5433/sample_source`
 - **MySQL Sample**: `mysql://appuser@localhost:3306/sample_source`
-- **Oracle Sample**: `//sys@localhost:1521/XE`
+- **Oracle Sample**: `//sys@localhost:1521/XE` (first boot takes 5-10 minutes)
+- **SeaTunnel**: bulk-load engine, runs in its own container (`infra/docker/seatunnel/`)
 - **pgAdmin**: http://localhost:5050 (admin@example.com / pgadmin_dev_password)
 
 ### 5. Set Up Pre-commit Hooks
 
 ```bash
-# Install pre-commit hooks (automatic linting/formatting on commit)
 pre-commit install
-
-# Run hooks manually (optional)
 pre-commit run --all-files
 ```
 
 ### 6. Run Tests
 
 ```bash
-# Unit tests
 poetry run pytest tests/unit/ -v
-
-# Lint and type checking
 poetry run black --check .
 poetry run isort --check-only .
 poetry run flake8 .
@@ -157,22 +160,15 @@ poetry run mypy . --ignore-missing-imports
 
 All code is checked with these tools (both locally and in CI):
 
-- **Black**: Code formatting
-- **isort**: Import sorting
-- **flake8**: PEP 8 linting
+- **Black**: Code formatting (line length 100)
+- **isort**: Import sorting (Black profile)
+- **flake8**: PEP 8 linting (max complexity 10)
 - **MyPy**: Static type checking
 
-Run all checks locally:
-
 ```bash
-# Format code
 poetry run black .
-
-# Sort imports
 poetry run isort .
-
-# Run linting & type checking
-./scripts/lint.sh  # Or run manually (see scripts directory)
+./scripts/check.sh
 ```
 
 ### Running the Application
@@ -184,8 +180,7 @@ cd apps/api-fastapi
 poetry run uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-API will be available at: http://localhost:8000
-API docs: http://localhost:8000/docs
+API: http://localhost:8000 · Docs: http://localhost:8000/docs
 
 #### Streamlit UI
 
@@ -194,7 +189,7 @@ cd apps/ui-streamlit
 poetry run streamlit run app.py --server.port 8501
 ```
 
-UI will be available at: http://localhost:8501
+UI: http://localhost:8501
 
 ### Creating a New Tool Adapter
 
@@ -232,28 +227,30 @@ class MyDialect(Dialect):
     @property
     def name(self) -> str:
         return "mydb"
-    
+
     def type_map(self) -> dict[str, str]:
         return {"INT": "INTEGER", ...}
-    
+
     def export_ddl_command(self, connection_config: dict) -> list[str]:
         return ["export_tool", "--database", ...]
-    
+
     def quote_identifier(self, identifier: str) -> str:
         return f'"{identifier}"'
 ```
 
+Neither of the above requires touching `orchestrator/graph.py` — see [docs/architecture.md §15](docs/architecture.md#15-extensibility-adding-new-features).
+
 ## Architecture Highlights
 
-- **LangGraph State Machine**: Orchestrates migration phases with deterministic state management
+- **LangGraph State Machine**: Orchestrates migration phases with deterministic state management and Postgres-backed checkpointing (pause/resume across restarts)
 - **Human-in-the-Loop**: Approval gates at critical points with audit trails
-- **Dialect Symmetry**: Source and target DBs use the same dialect interface
-- **Tool Adapters**: Pluggable external tools (CrackSQL, SeaTunnel, OpenRewrite, etc.)
-- **Knowledge Base**: RAG-powered migration rules and patterns with PGVector
-- **Observability**: Full tracing with LangSmith, metrics with Prometheus, dashboards in Grafana
-- **Checkpointing**: Pause/resume capability across restarts
+- **Dialect Symmetry**: Source and target DBs use the same dialect interface — any of Oracle/MySQL/PostgreSQL can be either side
+- **Tool Adapters**: Pluggable external tools (CrackSQL, SeaTunnel, OpenRewrite, Aider, kubectl, Terraform)
+- **Knowledge Base**: RAG-powered migration rules and patterns backed by PGVector
+- **Observability**: Tracing with LangSmith, metrics with Prometheus, dashboards in Grafana
+- **Table DDL is not translated**: table creation is delegated to SeaTunnel's JDBC sink auto-schema (`schema_save_mode`); the Schema Agent translates everything else (views, procedures, functions, triggers, foreign keys)
 
-See [docs/architecture.md](docs/architecture.md) for detailed system design.
+See [docs/architecture.md](docs/architecture.md) for full system design, sequence diagrams, and the shared state schema.
 
 ## CI/CD Pipeline
 
@@ -268,69 +265,66 @@ View workflow: [.github/workflows/ci.yml](.github/workflows/ci.yml)
 
 ## Common Tasks
 
-### Stop Local Databases
-
 ```bash
+# Stop local databases
 docker-compose down
-```
 
-### Clean Up Everything (including volumes)
-
-```bash
+# Clean up everything (including volumes)
 docker-compose down -v
-```
 
-### View Database Logs
-
-```bash
+# View logs
 docker-compose logs postgres-metadata
 docker-compose logs mysql-sample
 docker-compose logs oracle-sample
-```
+docker-compose logs seatunnel
 
-### Reset a Specific Database
-
-```bash
+# Reset a specific database
 docker-compose down postgres-metadata
 docker-compose up -d postgres-metadata
 ```
+
+### Inspecting Databases
+
+```bash
+# PostgreSQL
+poetry run psql -h localhost -U postgres -d migration_metadata
+
+# MySQL
+poetry run mysql -h localhost -u appuser -pmysql_dev_password sample_source
+
+# Oracle
+poetry run sqlplus sys/oracle_dev_password@localhost:1521/XE
+```
+
+Or use pgAdmin at http://localhost:5050 to browse the two PostgreSQL instances visually.
 
 ## Troubleshooting
 
 ### Docker Compose won't start
 
-Ensure Docker daemon is running and you have sufficient disk space:
-
 ```bash
 docker system prune -a  # Clean up unused images/containers
-docker-compose up -d    # Try again
+docker-compose up -d
 ```
 
 ### Oracle container stuck initializing
 
-Oracle XE takes 5-10 minutes on first run. Check logs:
-
-```bash
-docker-compose logs oracle-sample
-```
+Oracle XE takes 5-10 minutes on first run. Check `docker-compose logs oracle-sample`. Note: the official Oracle XE image ships a prebuilt seed DB, so custom init SQL must go under `/opt/oracle/scripts/startup/*.sql` (runs on every restart), not `/docker-entrypoint-initdb.d/`.
 
 ### PostgreSQL connection refused
-
-Ensure the service is healthy:
 
 ```bash
 docker-compose ps postgres-metadata
 docker-compose logs postgres-metadata
 ```
 
-### Python import errors
+### Python import errors / build failures on Windows
 
-Ensure dependencies are installed:
+If `poetry install` fails building C-extension deps (`oracledb`, `psycopg2`, `pyspark`, etc.) with "Microsoft Visual C++ 14.0 or greater is required", check that a prebuilt wheel exists for your Python version on PyPI. If not, install Python 3.12 (`winget install --id Python.Python.3.12`) and recreate the venv rather than installing MSVC Build Tools.
 
-```bash
-poetry install
-poetry run python -c "import langgraph; print(langgraph.__version__)"
-```
+### SeaTunnel jobs fail to connect
+
+Job configs run **inside** the SeaTunnel container, so `localhost` there does not refer to the sample DB containers — use `host.docker.internal` (already configured via `extra_hosts` in `docker-compose.yml`).
 
 ## Environment Variables
 
@@ -342,21 +336,13 @@ See [.env.example](.env.example) for all configurable options:
 - **Observability**: LangSmith API keys
 - **Deployment**: Kubernetes, namespace, environment
 
-## Documentation
-
-- [Architecture & Design](docs/architecture.md) - System overview and design decisions
-- [ADRs](docs/adr/README.md) - Architectural Decision Records
-- [Development Guide](DEVELOPMENT.md) - Detailed development setup
-- [Implementation Plan](plan.md) - Phase-by-phase roadmap
-- [Capstone Proposal](Capstone_Proposal.md) - Project proposal & scope
-
 ## Security
 
 - Store credentials in `.env` files (never commit)
-- Use AWS Secrets Manager for production
-- Follow [security checklist](docs/architecture.md#14-security-considerations)
-- Enable IAM role-based access (IRSA) for Kubernetes
-- All database connections use SSL/TLS where available
+- Use AWS Secrets Manager / IRSA for production credentials
+- Parameterized queries everywhere; typed-config command building for `kubectl`/`terraform` adapters (no raw string interpolation)
+- LLM-suggested DDL/code diffs never auto-apply without passing through a human gate or automated validation
+- See the security checklist in [docs/architecture.md §14](docs/architecture.md#14-security-considerations)
 
 ## Contributing
 
@@ -370,23 +356,13 @@ See [.env.example](.env.example) for all configurable options:
 
 MIT License - see LICENSE file for details
 
-## Support
+## Documentation
 
-- 📖 See [docs/](docs/) for documentation
-- 🐛 Report issues on GitHub
-- 💬 Check existing discussions in GitHub Issues
-
-## Roadmap
-
-See [plan.md](plan.md) for the 10-week implementation roadmap:
-- Phase 0: Foundations (current)
-- Phase 1: Orchestration skeleton
-- Phase 2-3: Dialect plugins & knowledge base
-- Phase 4-6: Translation & refactoring
-- Phase 7-8: Validation & deployment
-- Phase 9-10: Observability & integration
+- [Architecture & Design](docs/architecture.md) - System overview, sequence diagrams, shared state schema
+- [Implementation Plan](plan.md) - Phase-by-phase roadmap
+- [Capstone Proposal](Capstone_Proposal.md) - Original project brief & scope
 
 ---
 
-**Last Updated**: 2026-09-29  
-**Status**: Phase 0 - Foundations Complete ✅
+**Last Updated**: 2026-09-30
+**Status**: Phase 5 Complete (live-verified) — data migration & schema translation pipeline working end-to-end

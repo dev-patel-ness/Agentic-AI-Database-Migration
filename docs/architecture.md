@@ -2,7 +2,7 @@
 
 > **Migration matrix**: any of Oracle, MySQL, PostgreSQL can act as source or target. A single `DialectPair` in `MigrationState` (see [§7](#7-shared-state-schema)) determines direction at job-creation time; agents and adapters are direction-agnostic — they read `dialects.source` / `dialects.target` and dispatch to the matching plugin pair.
 
-> Status: Design baseline (v1.0) — merges `Capstone_Proposal.md` (agentic/API/UI framework) with `human_plan.md` (concrete migration tooling).
+> Status: Design baseline (v1.0), derived from `Capstone_Proposal.md` (agentic/API/UI framework) and the concrete migration tooling choices below.
 > Supported migrations: **any-to-any interconversion between Oracle, MySQL, and PostgreSQL** (e.g. Oracle→PostgreSQL, MySQL→Oracle, PostgreSQL→MySQL, etc). Each dialect is a symmetric plugin usable as either source or target — SQL Server is not in scope.
 
 ## Table of Contents
@@ -226,8 +226,7 @@ migration-platform/
 │   ├── integration/
 │   └── e2e/
 └── docs/
-    ├── architecture.md            # this file
-    └── adr/                       # Architecture Decision Records
+    └── architecture.md            # this file
 ```
 
 **Extension contract:** a new source dialect = new folder under `dialects/` implementing `base.py`; a new migration tool = new folder under `tool_adapters/` implementing `BaseToolAdapter`; neither requires editing `orchestrator/graph.py`.
@@ -236,7 +235,7 @@ migration-platform/
 
 ## 5. Agent Catalog & Tool Mapping
 
-| # | Agent | Responsibility (Capstone) | Tool (human_plan) | Adapter |
+| # | Agent | Responsibility (Capstone) | Tool | Adapter |
 |---|-------|---------------------------|--------------------|---------|
 | 1 | **Planner Agent** | Builds migration plan: sequence, priorities, risk levels, effort, manual-review flags | LLM reasoning + RAG over knowledge base | — (no external tool, pure LangGraph node) |
 | 2 | **Assessment Agent** | Discovery & schema analysis, dependency graph | Code-generated `schema.sql` (native per-dialect DDL export) + SQL/DDL parser (e.g. sqlglot) | `schema_extractor_adapter` |
