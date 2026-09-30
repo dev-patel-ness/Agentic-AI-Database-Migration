@@ -25,7 +25,17 @@ os.chdir(_CRACKSQL_HOME)
 
 from cracksql.cracksql import initkb  # noqa: E402
 
-CONFIG_FILE = r"C:\Workspace\CAPSTONE\CrackSQL\backend\config\init_config.yaml"
+CONFIG_FILE = os.path.join(
+    os.path.dirname(__file__),
+    "..",
+    "tool_adapters",
+    "cracksql_adapter",
+    "vendor",
+    "CrackSQL",
+    "backend",
+    "config",
+    "init_config.yaml",
+)
 
 if __name__ == "__main__":
     ok = initkb(CONFIG_FILE)

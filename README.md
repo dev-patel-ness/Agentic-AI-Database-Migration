@@ -12,7 +12,9 @@ A production-grade AI-assisted database migration platform supporting **any-to-a
 | 3 | Knowledge base & planner agent | ✅ Complete |
 | 4 | Schema & logic translation (CrackSQL + Bedrock) | ✅ Complete, live-verified |
 | 5 | Data migration (Apache SeaTunnel bulk load + DDL apply) | ✅ Complete, live-verified |
-| 6-10 | Code refactoring, validation, deployment, observability, final integration | 🔲 Not started |
+| 6 | Application code refactoring (OpenRewrite/Aider) | 🔲 Not started |
+| 7 | Validation & reconciliation (checksum adapter) | 🟡 Partial — checksum comparison implemented and wired into the graph; the `Test` phase node is still a hardcoded-PASS stub, no dedicated test-case generation yet |
+| 8-10 | Deployment/cutover, observability hardening, final integration | 🔲 Not started |
 
 See [plan.md](plan.md) for the full phase-by-phase roadmap and [docs/architecture.md](docs/architecture.md) for system design.
 
@@ -99,13 +101,24 @@ git clone https://github.com/your-org/Agentic-AI-Data-Migration.git
 cd Agentic-AI-Data-Migration
 ```
 
-### 2. Install Python Dependencies
+### 2. Build the CrackSQL Editable Package
+
+The `cracksql` dependency in `pyproject.toml` points at a generated, gitignored
+build directory — `poetry install` fails on a fresh clone until this runs first:
+
+```bash
+python tool_adapters/cracksql_adapter/vendor/CrackSQL/build_editable.py
+```
+
+Re-run this after pulling changes to `tool_adapters/cracksql_adapter/vendor/CrackSQL/backend/`.
+
+### 3. Install Python Dependencies
 
 ```bash
 poetry install
 ```
 
-### 3. Configure Environment
+### 4. Configure Environment
 
 ```bash
 cp .env.example .env
@@ -122,7 +135,7 @@ BEDROCK_MODEL_ID=amazon.nova-pro-v1:0
 BEDROCK_EMBEDDING_MODEL_ID=amazon.titan-embed-text-v2:0
 ```
 
-### 4. Start Local Database Stack
+### 5. Start Local Database Stack
 
 ```bash
 docker-compose up -d
@@ -137,14 +150,28 @@ The following services will be available:
 - **SeaTunnel**: bulk-load engine, runs in its own container (`infra/docker/seatunnel/`)
 - **pgAdmin**: http://localhost:5050 (admin@example.com / pgadmin_dev_password)
 
-### 5. Set Up Pre-commit Hooks
+### 6. Initialize the CrackSQL Knowledge Base (required for Phase 4 schema translation)
+
+```bash
+poetry run python scripts/init_cracksql_kb.py  # one-time, idempotent
+```
+
+### 7. Build the SeaTunnel Docker Image (required for Phase 5 data migration)
+
+```powershell
+./infra/docker/seatunnel/fetch_jdbc_drivers.ps1   # downloads JDBC driver jars (not committed to git)
+docker compose build seatunnel
+docker compose up -d seatunnel
+```
+
+### 8. Set Up Pre-commit Hooks
 
 ```bash
 pre-commit install
 pre-commit run --all-files
 ```
 
-### 6. Run Tests
+### 9. Run Tests
 
 ```bash
 poetry run pytest tests/unit/ -v
@@ -365,4 +392,4 @@ MIT License - see LICENSE file for details
 ---
 
 **Last Updated**: 2026-09-30
-**Status**: Phase 5 Complete (live-verified) — data migration & schema translation pipeline working end-to-end
+**Status**: Phase 5 Complete (live-verified); Phase 7 partially implemented (checksum validation works, Test-phase stub still pending)
