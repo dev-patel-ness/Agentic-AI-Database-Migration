@@ -415,6 +415,7 @@ MIT License - see LICENSE file for details
 
 ## Documentation
 
+- [Getting Started (step-by-step)](GETTING_STARTED.md) - From fresh clone to a running migration job
 - [Architecture & Design](docs/architecture.md) - System overview, sequence diagrams, shared state schema
 - [Implementation Plan](plan.md) - Phase-by-phase roadmap
 - [Capstone Proposal](Capstone_Proposal.md) - Original project brief & scope
