@@ -97,8 +97,8 @@ Agentic-AI-Data-Migration/
 ### 1. Clone and Setup Repository
 
 ```bash
-git clone https://github.com/your-org/Agentic-AI-Data-Migration.git
-cd Agentic-AI-Data-Migration
+git clone https://github.com/dev-patel-ness/Agentic-AI-Data-Migration.git
+cd Agentic-AI-Database-Migration
 ```
 
 ### 2. Pin Poetry to the Python 3.12 Interpreter
