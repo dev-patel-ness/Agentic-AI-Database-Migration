@@ -1,0 +1,129 @@
+name: CI - Lint and Test
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+      - 'feature/**'
+  pull_request:
+    branches:
+      - main
+      - develop
+
+jobs:
+  lint:
+    name: Lint and Format Check
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          cache: 'poetry'
+
+      - name: Install Poetry
+        run: |
+          curl -sSL https://install.python-poetry.org | python3 -
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Install dependencies
+        run: poetry install
+
+      - name: Check code formatting (Black)
+        run: poetry run black --check .
+
+      - name: Check import sorting (isort)
+        run: poetry run isort --check-only .
+
+      - name: Run flake8
+        run: poetry run flake8 .
+
+      - name: Run MyPy type checking
+        run: poetry run mypy . --ignore-missing-imports
+        continue-on-error: true
+
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    
+    services:
+      postgres:
+        image: postgres:14-alpine
+        env:
+          POSTGRES_DB: migration_metadata
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres_dev_password
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          cache: 'poetry'
+
+      - name: Install Poetry
+        run: |
+          curl -sSL https://install.python-poetry.org | python3 -
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Install dependencies
+        run: poetry install
+
+      - name: Run unit tests
+        run: poetry run pytest tests/unit/ -v --cov=. --cov-report=xml
+        env:
+          POSTGRES_METADATA_HOST: localhost
+          POSTGRES_METADATA_PORT: 5432
+          POSTGRES_METADATA_DATABASE: migration_metadata
+          POSTGRES_METADATA_USER: postgres
+          POSTGRES_METADATA_PASSWORD: postgres_dev_password
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          files: ./coverage.xml
+          flags: unittests
+          name: codecov-umbrella
+        continue-on-error: true
+
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install bandit
+        run: pip install bandit
+
+      - name: Run Bandit security scan
+        run: bandit -r . -ll -f json -o bandit-report.json
+        continue-on-error: true
+
+      - name: Upload Bandit report
+        uses: actions/upload-artifact@v3
+        with:
+          name: bandit-report
+          path: bandit-report.json
+        continue-on-error: true

@@ -1,0 +1,169 @@
+[tool.poetry]
+name = "agentic-ai-data-migration"
+version = "0.1.0"
+description = "Agentic AI-powered database migration platform supporting Oracle, MySQL, and PostgreSQL"
+authors = ["Capstone Team"]
+license = "MIT"
+readme = "README.md"
+packages = [
+    { include = "agents" },
+    { include = "apps" },
+    { include = "dialects" },
+    { include = "knowledge_base" },
+    { include = "orchestrator" },
+    { include = "tool_adapters" },
+]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+
+# Core frameworks
+langgraph = "^1.2"
+langchain = "^1.4"
+pydantic = "^2.5"
+fastapi = "^0.104"
+uvicorn = { version = "^0.24", extras = ["standard"] }
+streamlit = "^1.28"
+
+# Database drivers
+psycopg2-binary = "^2.9"
+mysql-connector-python = "^8.2"
+oracledb = "^2.0"
+pgvector = "^0.2"
+
+# AWS & Bedrock
+boto3 = "^1.34"
+botocore = "^1.33"
+
+# LLM & Embeddings
+langsmith = "^0.14"
+
+# Observability & Monitoring
+prometheus-client = "^0.19"
+
+# Data processing
+pandas = "^2.1"
+sqlglot = "^26.6"
+pyspark = "^3.5"
+
+# CrackSQL (Phase 4: Schema Agent) -- editable local package built from
+# tool_adapters/cracksql_adapter/vendor/CrackSQL/_package_build via
+# tool_adapters/cracksql_adapter/vendor/CrackSQL/build_editable.py. Patched
+# to use AWS Bedrock (Nova Pro + Titan) instead of its default OpenAI backend.
+cracksql = { path = "tool_adapters/cracksql_adapter/vendor/CrackSQL/_package_build", develop = true }
+
+# Utilities
+python-dotenv = "^1.0"
+pydantic-settings = "^2.1"
+httpx = "^0.25"
+aiohttp = "^3.9"
+
+# Development dependencies
+langgraph-checkpoint-postgres = "^3.1.2"
+psycopg = {extras = ["binary"], version = "^3.3.6"}
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4"
+pytest-asyncio = "^0.21"
+pytest-cov = "^4.1"
+pytest-mock = "^3.12"
+black = "^23.12"
+isort = "^5.13"
+flake8 = "^6.1"
+mypy = "^1.7"
+types-requests = "^2.31"
+types-pyyaml = "^6.0"
+pre-commit = "^3.5"
+ruff = "^0.1"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+# Tool configurations
+[tool.black]
+line-length = 100
+target-version = ['py311']
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+  # directories
+  \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | build
+  | dist
+)/
+'''
+
+[tool.isort]
+profile = "black"
+line_length = 100
+multi_line_mode = 3
+include_trailing_comma = true
+force_grid_wrap = 0
+use_parentheses = true
+ensure_newline_before_comments = true
+skip_glob = ["*/migrations/*"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+strict_equality = true
+ignore_missing_imports = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = [
+    "oracledb.*",
+    "seatunnel.*",
+    "openrewrite.*",
+]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --cov=. --cov-report=html --cov-report=term-missing"
+asyncio_mode = "auto"
+
+[tool.coverage.run]
+omit = [
+    "*/tests/*",
+    "*/site-packages/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+select = ["E", "F", "W"]
+ignore = ["E501"]  # Line too long (handled by Black)
+exclude = [
+    ".git",
+    ".venv",
+    "build",
+    "dist",
+]

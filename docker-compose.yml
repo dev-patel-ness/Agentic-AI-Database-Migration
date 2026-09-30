@@ -1,0 +1,135 @@
+services:
+  # PostgreSQL 14 - used for platform metadata DB + PGVector
+  postgres-metadata:
+    image: pgvector/pgvector:pg14
+    container_name: postgres-metadata
+    environment:
+      POSTGRES_DB: migration_metadata
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres_dev_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_metadata_data:/var/lib/postgresql/data
+      - ./infra/docker/postgres-init.sql:/docker-entrypoint-initdb.d/01-init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - migration-network
+
+  # PostgreSQL 14 - sample source/target database
+  postgres-sample:
+    image: postgres:14-alpine
+    container_name: postgres-sample
+    environment:
+      POSTGRES_DB: sample_source
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres_dev_password
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_sample_data:/var/lib/postgresql/data
+      - ./infra/docker/postgres-sample-init.sql:/docker-entrypoint-initdb.d/01-init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - migration-network
+
+  # MySQL 8 - sample source/target database
+  mysql-sample:
+    image: mysql:8.0
+    container_name: mysql-sample
+    environment:
+      MYSQL_DATABASE: sample_source
+      MYSQL_ROOT_PASSWORD: mysql_root_dev_password
+      MYSQL_USER: appuser
+      MYSQL_PASSWORD: mysql_dev_password
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_sample_data:/var/lib/mysql
+      - ./infra/docker/mysql-sample-init.sql:/docker-entrypoint-initdb.d/01-init.sql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - migration-network
+
+  # Oracle 11 XE - sample source/target database
+  # Note: Oracle XE free tier requires accepting license agreement.
+  # This uses the official Oracle image; ensure you have access.
+  oracle-sample:
+    image: container-registry.oracle.com/database/express:21.3.0-xe
+    container_name: oracle-sample
+    environment:
+      ORACLE_PWD: oracle_dev_password
+      ORACLE_CHARACTERSET: AL32UTF8
+    ports:
+      - "1521:1521"
+      - "5500:5500"
+    volumes:
+      - oracle_sample_data:/opt/oracle/oradata
+      - ./infra/docker/oracle-sample-init.sql:/opt/oracle/scripts/startup/01-init.sql
+    shm_size: 1gb
+    healthcheck:
+      test: ["CMD", "sqlplus", "-L", "sys/oracle_dev_password@//localhost:1521/XE", "as", "sysdba", "select 1 from dual;"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+    networks:
+      - migration-network
+    # Note: Oracle container may take 5+ minutes to initialize on first run
+
+  # Apache SeaTunnel (Zeta engine, local execution mode) - Data Agent's bulk
+  # loader. Kept alive with a no-op entrypoint; jobs are submitted one at a
+  # time via `docker exec seatunnel ./bin/seatunnel.sh -m local -c ...`
+  # (tool_adapters/seatunnel_adapter). Run infra/docker/seatunnel/fetch_jdbc_drivers.ps1
+  # once before `docker compose build seatunnel`.
+  seatunnel:
+    build:
+      context: ./infra/docker/seatunnel
+    container_name: seatunnel
+    entrypoint: ["tail", "-f", "/dev/null"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./tool_adapters/seatunnel_adapter/jobs:/jobs
+    networks:
+      - migration-network
+
+  # pgAdmin for PostgreSQL management (optional, useful for development)
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@example.com
+      PGADMIN_DEFAULT_PASSWORD: pgadmin_dev_password
+    ports:
+      - "5050:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    networks:
+      - migration-network
+    depends_on:
+      - postgres-metadata
+      - postgres-sample
+
+volumes:
+  postgres_metadata_data:
+  postgres_sample_data:
+  mysql_sample_data:
+  oracle_sample_data:
+  pgadmin_data:
+
+networks:
+  migration-network:
+    driver: bridge
