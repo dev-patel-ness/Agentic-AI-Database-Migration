@@ -22,6 +22,38 @@ def _fake_metadata_connection():
     yield MagicMock()
 
 
+def test_translate_schema_strips_oracle_noise_keywords_from_source_ddl_before_adapter_call():
+    # ANTLR's Oracle grammar chokes on EDITIONABLE/FORCE before translation
+    # even starts -- these must be stripped from the source DDL CrackSQL
+    # receives, not just the translated output.
+    discovery = _discovery_with(
+        [
+            {
+                "object_type": "view",
+                "name": "v1",
+                "schema": "public",
+                "definition": 'CREATE OR REPLACE FORCE EDITIONABLE VIEW "V1" AS SELECT 1',
+            }
+        ]
+    )
+    fake_adapter = MagicMock()
+    fake_adapter.prepare.return_value = AdapterConfig(options={})
+    fake_adapter.run.return_value = ToolResult(
+        success=True,
+        output={"translated_sql": "CREATE VIEW v1 AS SELECT 1", "method": "local_to_global"},
+        confidence_score=0.95,
+    )
+
+    with patch("agents.schema_agent.CrackSQLAdapter", return_value=fake_adapter), patch(
+        "agents.schema_agent.metadata_connection", _fake_metadata_connection
+    ):
+        translate_schema("job-1", discovery, "oracle", "postgresql")
+
+    sent_sql = fake_adapter.prepare.call_args[0][0]["source_sql"]
+    assert "EDITIONABLE" not in sent_sql
+    assert "FORCE" not in sent_sql
+
+
 def test_sanitize_target_ddl_folds_quoted_identifiers_to_lowercase_for_postgresql():
     # CrackSQL preserves Oracle's uppercase quoted identifiers, but SeaTunnel
     # creates target Postgres tables/columns unquoted (folded lowercase) --

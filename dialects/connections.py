@@ -17,13 +17,25 @@ def connect(dialect_name: str, connection_config: dict[str, Any]):
     if dialect_name == "postgresql":
         import psycopg2
 
-        return psycopg2.connect(
+        conn = psycopg2.connect(
             host=connection_config.get("host", "localhost"),
             port=connection_config.get("port", 5432),
             user=connection_config.get("username", "postgres"),
             password=connection_config.get("password", ""),
             dbname=connection_config.get("database", "postgres"),
         )
+        # Unqualified identifiers in translated DDL (views/triggers/FKs --
+        # schema_agent's apply step doesn't schema-qualify them) resolve
+        # against the connection's search_path, which defaults to "public".
+        # Without this, DDL against a non-public target schema fails with
+        # "relation ... does not exist" even though the table exists.
+        schema_name = connection_config.get("schema_name")
+        if schema_name:
+            quoted_schema = '"' + schema_name.replace('"', '""') + '"'
+            with conn.cursor() as cursor:
+                cursor.execute(f"SET search_path TO {quoted_schema}, public")
+            conn.commit()
+        return conn
     if dialect_name == "mysql":
         import mysql.connector
 

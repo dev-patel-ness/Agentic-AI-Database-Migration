@@ -39,14 +39,23 @@ _ORACLE_NOISE_KEYWORDS_RE = re.compile(r"\b(EDITIONABLE|NONEDITIONABLE|FORCE)\b\
 _QUOTED_IDENTIFIER_RE = re.compile(r'"([^"]+)"')
 
 
+def _strip_oracle_noise(ddl: str) -> str:
+    """Remove Oracle-only cosmetic keywords; shared by source-side
+    pre-cleaning (ANTLR chokes on EDITIONABLE/FORCE -- see
+    _ORACLE_NOISE_KEYWORDS_RE) and target-side post-cleaning."""
+    if not ddl:
+        return ddl
+    cleaned = _ORACLE_NOISE_KEYWORDS_RE.sub("", ddl)
+    return re.sub(r"[ \t]+", " ", cleaned)
+
+
 def _sanitize_target_ddl(ddl: str, target_dialect: str) -> str:
     """Strip Oracle-only cosmetic DDL keywords when they leak through to a
     non-Oracle target, and fold quoted identifiers to match the case the
     target actually created them in; a no-op for everything else."""
     if target_dialect == "oracle" or not ddl:
         return ddl
-    cleaned = _ORACLE_NOISE_KEYWORDS_RE.sub("", ddl)
-    cleaned = re.sub(r"[ \t]+", " ", cleaned)
+    cleaned = _strip_oracle_noise(ddl)
     if target_dialect == "postgresql":
         cleaned = _QUOTED_IDENTIFIER_RE.sub(lambda m: f'"{m.group(1).lower()}"', cleaned)
     return cleaned
@@ -127,6 +136,12 @@ def translate_schema(
                     conn, job_id, object_type, object_name, None, None, "NO_SOURCE_DDL", None
                 )
                 continue
+
+            if source_dialect == "oracle":
+                # ANTLR's Oracle grammar chokes on EDITIONABLE/FORCE before
+                # translation even starts -- strip them from the source too,
+                # not just the final output (see _sanitize_target_ddl).
+                source_ddl = _strip_oracle_noise(source_ddl)
 
             try:
                 config = adapter.prepare(
