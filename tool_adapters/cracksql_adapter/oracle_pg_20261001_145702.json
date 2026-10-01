@@ -1,0 +1,11 @@
+{
+    "info": {
+        "src_dialect": "oracle",
+        "tgt_dialect": "pg",
+        "src_sql": "ALTER TABLE \"PROJECT_ASSIGNMENTS\" ADD CONSTRAINT \"SYS_C008238\" FOREIGN KEY (\"PROJECT_ID\") REFERENCES \"PROJECTS\" (\"PROJECT_ID\")",
+        "model_name": null,
+        "vector_config": null,
+        "tgt_db_config": null
+    },
+    "process_data": []
+}

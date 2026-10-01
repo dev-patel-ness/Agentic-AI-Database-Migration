@@ -23,6 +23,7 @@ from agents.data_agent import migrate_data
 from agents.planner_agent import build_plan
 from agents.schema_agent import translate_schema
 from agents.validation_agent import validate_data
+from dialects.connections import default_namespace
 from observability import metrics
 from orchestrator import connection_registry
 from orchestrator.retry import with_retry
@@ -382,7 +383,7 @@ def _validate(state: MigrationState) -> dict[str, Any]:
     
     source_connection, target_connection = connections
     discovery = DiscoveryResult(**state.discovery.model_dump())
-    
+
     # Run validation via checksum_adapter on all tables
     try:
         validation_report = validate_data(
@@ -392,8 +393,8 @@ def _validate(state: MigrationState) -> dict[str, Any]:
             target_dialect=state.dialects.target,
             source_connection=source_connection,
             target_connection=target_connection,
-            source_namespace=state.dialects.source.lower(),
-            target_namespace=state.dialects.target.lower(),
+            source_namespace=default_namespace(state.dialects.source, source_connection),
+            target_namespace=default_namespace(state.dialects.target, target_connection),
         )
         
         # Record validation progress metric
