@@ -16,6 +16,7 @@ __all__ = [
     "save_translation_result",
     "fetch_applicable_translations",
     "mark_translation_applied",
+    "fetch_applied_statuses",
 ]
 
 
@@ -85,3 +86,23 @@ def mark_translation_applied(
         "WHERE id = %(id)s",
         {"status": status, "error": error, "id": translation_id},
     )
+
+
+def fetch_applied_statuses(conn: psycopg.Connection, job_id: str) -> dict[tuple[str, str], dict[str, Any]]:
+    """Every (object_type, object_name) this job translated, with its DDL-application
+    outcome (PENDING_MANUAL_REVIEW/APPLIED/APPLY_FAILED/None). Lets the Validation
+    Agent distinguish "deliberately skipped pending human review" from "actually
+    missing" when a non-table object isn't found on the target."""
+    cur = conn.execute(
+        """
+        SELECT oce.object_type, oce.object_name, tr.applied_status, tr.applied_error
+        FROM translation_results tr
+        JOIN object_catalog_entries oce ON oce.id = tr.source_object_id
+        WHERE tr.job_id = %(job_id)s
+        """,
+        {"job_id": job_id},
+    )
+    return {
+        (object_type, object_name): {"applied_status": applied_status, "applied_error": applied_error}
+        for object_type, object_name, applied_status, applied_error in cur.fetchall()
+    }

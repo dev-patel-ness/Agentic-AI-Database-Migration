@@ -275,13 +275,22 @@ def _render_validation(validation_report: dict[str, Any]) -> None:
     object_validations = validation_report.get("object_validations", [])
     if object_validations:
         present = sum(1 for ov in object_validations if ov.get("status") == "PRESENT")
+        pending_review = [ov for ov in object_validations if ov.get("status") == "PENDING_MANUAL_REVIEW"]
+        failed = [
+            ov
+            for ov in object_validations
+            if ov.get("status") not in ("PRESENT", "PENDING_MANUAL_REVIEW")
+        ]
         st.metric("Non-table objects on target", f"{present}/{len(object_validations)} present")
-        missing = [ov for ov in object_validations if ov.get("status") != "PRESENT"]
-        if missing:
-            st.warning(f"⚠️ {len(missing)} object(s) missing/errored on target")
-            with st.expander(f"Missing/errored objects ({len(missing)})"):
-                st.dataframe(missing, use_container_width=True, hide_index=True)
-        else:
+        if pending_review:
+            with st.expander(f"Pending manual review ({len(pending_review)})"):
+                st.info("Low-confidence translations intentionally skipped -- not yet applied to target.")
+                st.dataframe(pending_review, use_container_width=True, hide_index=True)
+        if failed:
+            st.warning(f"⚠️ {len(failed)} object(s) missing/errored on target")
+            with st.expander(f"Missing/errored objects ({len(failed)})"):
+                st.dataframe(failed, use_container_width=True, hide_index=True)
+        elif not pending_review:
             st.success("✅ All views/procedures/functions/triggers/FKs present on target")
 
     mismatches = validation_report.get("mismatches", 0)
@@ -378,8 +387,8 @@ if st.button("Refresh"):
     st.rerun()
 
 auto_refresh = st.checkbox(
-    "Auto-refresh every 2s", value=job["status"] not in {"DONE", "ABORTED", "ROLLED_BACK"}
+    "Auto-refresh every 5s", value=job["status"] not in {"DONE", "ABORTED", "ROLLED_BACK"}
 )
 if auto_refresh and job["status"] not in {"DONE", "ABORTED", "ROLLED_BACK"}:
-    time.sleep(2)
+    time.sleep(5)
     st.rerun()

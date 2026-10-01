@@ -106,7 +106,7 @@ class ObjectValidationResult(BaseModel):
 
     object_type: str
     object_name: str
-    status: str  # "PRESENT" | "MISSING" | "ERROR"
+    status: str  # "PRESENT" | "MISSING" | "ERROR" | "PENDING_MANUAL_REVIEW" | "APPLY_FAILED"
     detail: Optional[str] = None
 
 

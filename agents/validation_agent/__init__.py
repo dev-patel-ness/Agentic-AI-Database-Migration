@@ -13,6 +13,7 @@ from typing import Any, Optional
 
 from dialects import get_dialect
 from dialects.connections import connect as _connect
+from agents.schema_agent.metadata_store import fetch_applied_statuses, metadata_connection
 from orchestrator.state import ChecksumResult, DiscoveryResult, ObjectValidationResult, ValidationReport
 from tool_adapters.checksum_adapter import ChecksumAdapter
 
@@ -55,7 +56,16 @@ def _validate_schema_objects(
     target_connection: dict[str, Any],
     target_namespace: str,
 ) -> list[ObjectValidationResult]:
-    """Check that every discovered view/procedure/function/trigger/foreign_key exists on the target."""
+    """Check that every discovered view/procedure/function/trigger/foreign_key exists on the target.
+
+    Objects the Schema Agent deliberately skipped (flagged into
+    `manual_review_objects`, applied_status=PENDING_MANUAL_REVIEW) are reported as
+    such rather than as a hard MISSING failure -- they were never supposed to be on
+    the target yet. Objects whose DDL application itself failed are reported as
+    APPLY_FAILED with the underlying error. Only objects that were actually applied
+    (or never flagged either way) but still aren't found on the target are real
+    MISSING failures.
+    """
     objects = [
         entry for entry in discovery.object_catalog if entry["object_type"] in _EXISTENCE_QUERIES or entry["object_type"] == "foreign_key"
     ]
@@ -71,15 +81,47 @@ def _validate_schema_objects(
             for entry in objects
         ]
 
+    try:
+        with metadata_connection() as conn:
+            applied_statuses = fetch_applied_statuses(conn, job_id)
+    except Exception:
+        logger.exception("[job=%s] Failed to fetch applied-translation statuses for validation", job_id)
+        applied_statuses = {}
+
     results: list[ObjectValidationResult] = []
     for entry in objects:
         object_type = entry["object_type"]
         object_name = entry["name"]
         present = object_name.lower() in existing.get(object_type, set())
-        status = "PRESENT" if present else "MISSING"
-        if status == "MISSING":
+        if present:
+            results.append(ObjectValidationResult(object_type=object_type, object_name=object_name, status="PRESENT"))
+            continue
+
+        applied = applied_statuses.get((object_type, object_name))
+        applied_status = applied.get("applied_status") if applied else None
+        if applied_status == "PENDING_MANUAL_REVIEW":
+            logger.info("[job=%s] %s %s: pending manual review, not yet on target (expected)", job_id, object_type, object_name)
+            results.append(
+                ObjectValidationResult(
+                    object_type=object_type,
+                    object_name=object_name,
+                    status="PENDING_MANUAL_REVIEW",
+                    detail="Flagged for manual review (low-confidence translation); not applied to target yet.",
+                )
+            )
+        elif applied_status == "APPLY_FAILED":
+            logger.warning("[job=%s] %s %s: DDL application failed", job_id, object_type, object_name)
+            results.append(
+                ObjectValidationResult(
+                    object_type=object_type,
+                    object_name=object_name,
+                    status="APPLY_FAILED",
+                    detail=(applied or {}).get("applied_error"),
+                )
+            )
+        else:
             logger.warning("[job=%s] %s %s: MISSING on target", job_id, object_type, object_name)
-        results.append(ObjectValidationResult(object_type=object_type, object_name=object_name, status=status))
+            results.append(ObjectValidationResult(object_type=object_type, object_name=object_name, status="MISSING"))
     return results
 
 
@@ -190,7 +232,11 @@ def validate_data(
     object_validations = _validate_schema_objects(
         job_id, discovery, target_dialect, target_connection, target_namespace
     )
-    mismatches += sum(1 for ov in object_validations if ov.status != "PRESENT")
+    # PENDING_MANUAL_REVIEW is an expected, deliberate skip (not yet applied) --
+    # it isn't a validation failure, just a pending human action.
+    mismatches += sum(
+        1 for ov in object_validations if ov.status not in ("PRESENT", "PENDING_MANUAL_REVIEW")
+    )
 
     # Determine overall status
     overall_status = "PASS" if mismatches == 0 else "FAIL"
