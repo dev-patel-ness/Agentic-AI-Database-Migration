@@ -101,8 +101,18 @@ class ChecksumResult(BaseModel):
     checksum_target: Optional[str] = None
 
 
+class ObjectValidationResult(BaseModel):
+    """Existence check for a non-table object (view/procedure/function/trigger/foreign_key)."""
+
+    object_type: str
+    object_name: str
+    status: str  # "PRESENT" | "MISSING" | "ERROR"
+    detail: Optional[str] = None
+
+
 class ValidationReport(BaseModel):
     table_checksums: list[ChecksumResult] = Field(default_factory=list)
+    object_validations: list[ObjectValidationResult] = Field(default_factory=list)
     mismatches: int = 0
     overall_status: str = "PENDING"
 

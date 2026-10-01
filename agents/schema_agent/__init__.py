@@ -8,6 +8,7 @@ confidence scores) per object, and persists `TRANSLATION_RESULT` rows.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Optional
 
 from agents.schema_agent.metadata_store import (
@@ -21,6 +22,23 @@ from orchestrator.state import DiscoveryResult, TranslationResult
 from tool_adapters.cracksql_adapter import CrackSQLAdapter
 
 logger = logging.getLogger(__name__)
+
+# Oracle DDL carries cosmetic keywords (EDITIONABLE/NONEDITIONABLE on
+# views/functions/procedures/triggers, FORCE on views) that are invalid
+# syntax on every other dialect. CrackSQL sometimes judges a simple object
+# "already compatible" and passes it through unchanged (high confidence, no
+# LLM call) without stripping these -- strip them ourselves rather than
+# relying on CrackSQL for syntax noise that isn't a real translation problem.
+_ORACLE_NOISE_KEYWORDS_RE = re.compile(r"\b(EDITIONABLE|NONEDITIONABLE|FORCE)\b\s*", re.IGNORECASE)
+
+
+def _sanitize_target_ddl(ddl: str, target_dialect: str) -> str:
+    """Strip Oracle-only cosmetic DDL keywords when they leak through to a
+    non-Oracle target; a no-op for everything else."""
+    if target_dialect == "oracle" or not ddl:
+        return ddl
+    cleaned = _ORACLE_NOISE_KEYWORDS_RE.sub("", ddl)
+    return re.sub(r"[ \t]+", " ", cleaned)
 
 # Views/procedures/triggers/FKs aren't linked by the (table-only) dependency
 # graph, so apply in this fixed, generally-safe order rather than an inferred
@@ -150,6 +168,8 @@ def translate_schema(
                 continue
 
             translated_sql = result.output.get("translated_sql")
+            if translated_sql:
+                translated_sql = _sanitize_target_ddl(translated_sql, target_dialect)
             confidence = result.confidence_score
             status = "SUCCESS" if translated_sql else "FAILED"
             translated_objects.append(
@@ -179,7 +199,10 @@ def translate_schema(
 
 
 def apply_schema_translations(
-    job_id: str, target_dialect: str, target_connection: dict[str, Any]
+    job_id: str,
+    target_dialect: str,
+    target_connection: dict[str, Any],
+    manual_review_objects: Optional[list[str]] = None,
 ) -> list[dict[str, Any]]:
     """Execute every not-yet-applied SUCCESSful translation's target DDL
     against the target DB (views/procedures/functions/triggers/foreign_keys --
@@ -187,9 +210,14 @@ def apply_schema_translations(
     SKIPPED_TABLE branch above). Called by the DataMigrate node *after* the
     Data Agent has created the target tables via SeaTunnel.
 
+    Objects the Planner flagged into `manual_review_objects` (low-confidence
+    translation) are skipped rather than auto-applied -- per plan.md Phase 4,
+    those are meant for a human pass, not blind execution against the target.
+
     One bad object must never block the rest of the batch -- each DDL
     statement is executed and committed independently.
     """
+    skip_names = set(manual_review_objects or [])
     results: list[dict[str, Any]] = []
     with metadata_connection() as meta_conn:
         pending = fetch_applicable_translations(meta_conn, job_id)
@@ -202,6 +230,12 @@ def apply_schema_translations(
         try:
             for row in pending:
                 object_type, object_name, ddl = row["object_type"], row["object_name"], row["target_ddl"]
+                if object_name in skip_names:
+                    mark_translation_applied(meta_conn, row["id"], "PENDING_MANUAL_REVIEW")
+                    results.append(
+                        {"object_type": object_type, "object_name": object_name, "status": "PENDING_MANUAL_REVIEW"}
+                    )
+                    continue
                 try:
                     cursor = target_conn.cursor()
                     cursor.execute(ddl)

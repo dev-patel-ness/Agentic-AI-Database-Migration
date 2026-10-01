@@ -172,51 +172,6 @@ st.metric("Current phase", job["current_phase"])
 st.metric("Status", job["status"])
 st.progress(min(job["retry_count"] / max(job.get("retry_count", 0) or 1, 1), 1.0))
 
-# Validation progress display (Phase 7)
-validation_report = job.get("validation")
-if validation_report:
-    st.divider()
-    st.subheader("Data Validation Progress")
-    
-    checksums = validation_report.get("table_checksums", [])
-    total_tables = len(checksums)
-    passed_tables = sum(1 for cs in checksums if cs.get("status") == "MATCH")
-    
-    if total_tables > 0:
-        st.metric("Validation Progress", f"{passed_tables}/{total_tables} tables")
-        
-        # Checksum match rate bar
-        match_rate = (passed_tables / total_tables) * 100
-        st.progress(match_rate / 100.0, text=f"Checksum Match Rate: {match_rate:.1f}%")
-        
-        # Show mismatches if any
-        mismatches = validation_report.get("mismatches", 0)
-        if mismatches > 0:
-            st.warning(f"⚠️ {mismatches} table(s) with checksum mismatches detected")
-            
-            # List tables with issues
-            mismatch_tables = [cs for cs in checksums if cs.get("status") != "MATCH"]
-            if mismatch_tables:
-                with st.expander(f"Mismatched tables ({len(mismatch_tables)})"):
-                    for table_result in mismatch_tables:
-                        col1, col2, col3 = st.columns(3)
-                        col1.write(f"**{table_result.get('table_name')}**")
-                        col2.write(f"Status: {table_result.get('status')}")
-                        if table_result.get("checksum_source"):
-                            col3.write(f"Checksum: {table_result['checksum_source'][:8]}...")
-        else:
-            st.success("✅ All tables validated successfully")
-    
-    # Show retry history if available
-    retry_history = job.get("retry_history", [])
-    if retry_history:
-        migrate_retries = [r for r in retry_history if r.get("phase") == "DataMigrate"]
-        if migrate_retries:
-            st.info(f"Data Migration Retries: {len(migrate_retries)}/2 attempts used")
-
-if job["approvals"]:
-    st.write("**Approval history**")
-    st.table(job["approvals"])
 
 def _render_plan_summary(plan: dict[str, Any]) -> None:
     """Structured plan-summary view (counts + risk breakdown + per-object
@@ -252,6 +207,134 @@ def _render_plan_summary(plan: dict[str, Any]) -> None:
                 use_container_width=True,
                 hide_index=True,
             )
+
+
+def _render_discovery(discovery: dict[str, Any]) -> None:
+    catalog = discovery.get("object_catalog") or []
+    counts = Counter(entry["object_type"] for entry in catalog)
+    cols = st.columns(5)
+    for col, key in zip(cols, ["table", "view", "procedure", "function", "trigger"]):
+        col.metric(key.capitalize(), counts.get(key, 0))
+    with st.expander(f"Object catalog ({len(catalog)} objects)"):
+        st.dataframe(
+            [{"type": e["object_type"], "name": e["name"], "schema": e.get("schema")} for e in catalog],
+            use_container_width=True,
+            hide_index=True,
+        )
+
+
+def _render_schema_translation(translation: dict[str, Any]) -> None:
+    objects = translation.get("translated_objects") or []
+    avg_conf = translation.get("average_confidence")
+    st.metric("Avg. translation confidence", f"{avg_conf:.2f}" if avg_conf is not None else "n/a")
+    status_counts = Counter(o["status"] for o in objects)
+    st.write(", ".join(f"{count} {status}" for status, count in status_counts.items()) or "no objects")
+    with st.expander(f"Translated objects ({len(objects)})"):
+        st.dataframe(
+            [
+                {
+                    "type": o["object_type"],
+                    "name": o["object_name"],
+                    "status": o["status"],
+                    "confidence": o.get("confidence"),
+                }
+                for o in objects
+            ],
+            use_container_width=True,
+            hide_index=True,
+        )
+
+
+def _render_data_migration(data_migration: dict[str, Any]) -> None:
+    st.metric("Rows moved", data_migration.get("rows_moved", 0))
+    tables = data_migration.get("tables") or []
+    with st.expander(f"Per-table migration results ({len(tables)})"):
+        st.dataframe(tables, use_container_width=True, hide_index=True)
+    ddl_applications = data_migration.get("ddl_applications") or []
+    if ddl_applications:
+        with st.expander(f"Applied DDL (views/procedures/triggers/FKs) ({len(ddl_applications)})"):
+            st.dataframe(ddl_applications, use_container_width=True, hide_index=True)
+
+
+def _render_validation(validation_report: dict[str, Any]) -> None:
+    checksums = validation_report.get("table_checksums", [])
+    total_tables = len(checksums)
+    passed_tables = sum(1 for cs in checksums if cs.get("status") == "MATCH")
+
+    if total_tables > 0:
+        st.metric("Table validation", f"{passed_tables}/{total_tables} tables")
+        match_rate = (passed_tables / total_tables) * 100
+        st.progress(match_rate / 100.0, text=f"Checksum Match Rate: {match_rate:.1f}%")
+        mismatch_tables = [cs for cs in checksums if cs.get("status") != "MATCH"]
+        if mismatch_tables:
+            with st.expander(f"Mismatched tables ({len(mismatch_tables)})"):
+                st.dataframe(mismatch_tables, use_container_width=True, hide_index=True)
+        else:
+            st.success("✅ All tables validated successfully")
+
+    object_validations = validation_report.get("object_validations", [])
+    if object_validations:
+        present = sum(1 for ov in object_validations if ov.get("status") == "PRESENT")
+        st.metric("Non-table objects on target", f"{present}/{len(object_validations)} present")
+        missing = [ov for ov in object_validations if ov.get("status") != "PRESENT"]
+        if missing:
+            st.warning(f"⚠️ {len(missing)} object(s) missing/errored on target")
+            with st.expander(f"Missing/errored objects ({len(missing)})"):
+                st.dataframe(missing, use_container_width=True, hide_index=True)
+        else:
+            st.success("✅ All views/procedures/functions/triggers/FKs present on target")
+
+    mismatches = validation_report.get("mismatches", 0)
+    overall_status = validation_report.get("overall_status", "PENDING")
+    st.write(f"**Overall validation status:** {overall_status} ({mismatches} mismatches)")
+
+
+def _render_test_report(test_report: dict[str, Any]) -> None:
+    st.write(f"**Overall test status:** {test_report.get('overall_status', 'PENDING')}")
+    details = test_report.get("details") or []
+    if details:
+        with st.expander(f"Test details ({len(details)})"):
+            st.dataframe(details, use_container_width=True, hide_index=True)
+
+
+def _render_deployment(deployment: dict[str, Any]) -> None:
+    st.write(f"**Deployment status:** {deployment.get('status', 'PENDING')}")
+    if deployment.get("detail"):
+        st.caption(deployment["detail"])
+
+
+# Pipeline progress: every completed phase gets its own expander, populated
+# directly from the job state (not just whatever happens to ride along with
+# the current interrupt payload) so judges can see history after it's approved.
+_PHASE_SECTIONS: list[tuple[str, str, Any]] = [
+    ("discovery", "🔍 Discovery", _render_discovery),
+    ("plan", "📋 Migration Plan", _render_plan_summary),
+    ("schema_translation", "🔁 Schema Translation", _render_schema_translation),
+    ("data_migration", "📦 Data Migration", _render_data_migration),
+    ("validation", "✅ Validation", _render_validation),
+    ("test_report", "🧪 Test Report", _render_test_report),
+    ("deployment", "🚀 Deployment", _render_deployment),
+]
+
+st.divider()
+st.subheader("Pipeline Progress")
+for field, label, renderer in _PHASE_SECTIONS:
+    data = job.get(field)
+    with st.expander(label, expanded=bool(data) and field in {"validation", "plan"}):
+        if data:
+            renderer(data)
+        else:
+            st.caption("Not reached yet.")
+
+retry_history = job.get("retry_history", [])
+if retry_history:
+    st.divider()
+    st.write("**Retry history**")
+    st.table(retry_history)
+
+if job["approvals"]:
+    st.write("**Approval history**")
+    st.table(job["approvals"])
 
 
 interrupt = job.get("interrupt")

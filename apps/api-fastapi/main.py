@@ -117,6 +117,15 @@ class JobStatusResponse(BaseModel):
     status: str
     retry_count: int
     approvals: list[dict[str, Any]]
+    retry_history: list[dict[str, Any]]
+    discovery: Optional[dict[str, Any]] = None
+    plan: Optional[dict[str, Any]] = None
+    schema_translation: Optional[dict[str, Any]] = None
+    code_refactor: Optional[dict[str, Any]] = None
+    data_migration: Optional[dict[str, Any]] = None
+    validation: Optional[dict[str, Any]] = None
+    test_report: Optional[dict[str, Any]] = None
+    deployment: Optional[dict[str, Any]] = None
     interrupt: Optional[dict[str, Any]] = None
 
 
@@ -152,6 +161,19 @@ def _snapshot_to_status(job_id: str, snapshot) -> JobStatusResponse:
         status=state.status,
         retry_count=state.retry_count,
         approvals=[a.model_dump(mode="json") for a in state.approvals],
+        retry_history=[r.model_dump(mode="json") for r in state.retry_history],
+        discovery=state.discovery.model_dump(mode="json") if state.discovery else None,
+        plan=state.plan.model_dump(mode="json") if state.plan else None,
+        schema_translation=(
+            state.schema_translation.model_dump(mode="json") if state.schema_translation else None
+        ),
+        code_refactor=state.code_refactor.model_dump(mode="json") if state.code_refactor else None,
+        data_migration=(
+            state.data_migration.model_dump(mode="json") if state.data_migration else None
+        ),
+        validation=state.validation.model_dump(mode="json") if state.validation else None,
+        test_report=state.test_report.model_dump(mode="json") if state.test_report else None,
+        deployment=state.deployment.model_dump(mode="json") if state.deployment else None,
         interrupt=interrupt_payload,
     )
 

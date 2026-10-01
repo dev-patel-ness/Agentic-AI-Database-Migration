@@ -234,6 +234,7 @@ def _data_migrate(state: MigrationState) -> dict[str, Any]:
             state.dialects.target,
             source_connection,
             target_connection,
+            state.plan.manual_review_objects if state.plan else None,
         )
         duration = time.monotonic() - start_time
         

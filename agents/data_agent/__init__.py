@@ -13,7 +13,7 @@ functions/triggers/foreign_keys) was already translated by the Schema Agent
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Optional
 
 from agents.data_agent.metadata_store import metadata_connection, save_data_migration_result
 from agents.schema_agent import apply_schema_translations
@@ -31,6 +31,7 @@ def migrate_data(
     target_dialect: str,
     source_connection: dict[str, Any],
     target_connection: dict[str, Any],
+    manual_review_objects: Optional[list[str]] = None,
 ) -> DataMigrationResult:
     """Bulk-load every discovered table source->target, then apply the
     Schema Agent's translated non-table DDL now that tables exist."""
@@ -87,7 +88,9 @@ def migrate_data(
                 conn, job_id, table_name, rows_read, rows_written, "SUCCESS", result.execution_time_seconds
             )
 
-    ddl_applications = apply_schema_translations(job_id, target_dialect, target_connection)
+    ddl_applications = apply_schema_translations(
+        job_id, target_dialect, target_connection, manual_review_objects
+    )
 
     return DataMigrationResult(rows_moved=total_rows, tables=table_results, ddl_applications=ddl_applications)
 

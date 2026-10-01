@@ -18,7 +18,11 @@ New-Item -ItemType Directory -Force -Path $connectorsDir | Out-Null
 $drivers = @(
     @{ Url = "https://repo1.maven.org/maven2/org/postgresql/postgresql/42.7.4/postgresql-42.7.4.jar"; File = "postgresql-42.7.4.jar"; Dir = $jarsDir },
     @{ Url = "https://repo1.maven.org/maven2/com/mysql/mysql-connector-j/8.4.0/mysql-connector-j-8.4.0.jar"; File = "mysql-connector-j-8.4.0.jar"; Dir = $jarsDir },
-    @{ Url = "https://repo1.maven.org/maven2/com/oracle/database/jdbc/ojdbc11/23.5.0.24.07/ojdbc11-23.5.0.24.07.jar"; File = "ojdbc11-23.5.0.24.07.jar"; Dir = $jarsDir },
+    # ojdbc8, not ojdbc11 -- the seatunnel base image's bundled JRE is Java 8;
+    # ojdbc11 class files (Java 11 bytecode) fail to load under it, and
+    # DriverManager silently swallows that failure, surfacing later as a
+    # misleading "No suitable driver found" at connection time.
+    @{ Url = "https://repo1.maven.org/maven2/com/oracle/database/jdbc/ojdbc8/23.5.0.24.07/ojdbc8-23.5.0.24.07.jar"; File = "ojdbc8-23.5.0.24.07.jar"; Dir = $jarsDir },
     @{ Url = "https://repo1.maven.org/maven2/org/apache/seatunnel/connector-jdbc/2.3.9/connector-jdbc-2.3.9.jar"; File = "connector-jdbc-2.3.9.jar"; Dir = $connectorsDir }
 )
 

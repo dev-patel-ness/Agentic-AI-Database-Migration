@@ -1,7 +1,9 @@
 """Validation Agent: row counts, checksums, referential integrity, aggregate comparisons (Phase 7).
 
-Orchestrates data validation: runs checksum adapter on all tables, compiles results
-into a ValidationReport, and identifies mismatches for human review.
+Orchestrates data validation: runs checksum adapter on all tables, checks that
+every non-table object (view/procedure/function/trigger/foreign_key) the
+Schema Agent translated actually exists on the target, and compiles both into
+a ValidationReport with mismatches flagged for human review.
 """
 
 from __future__ import annotations
@@ -9,10 +11,76 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
-from orchestrator.state import ChecksumResult, ValidationReport, DiscoveryResult
+from dialects import get_dialect
+from dialects.connections import connect as _connect
+from orchestrator.state import ChecksumResult, DiscoveryResult, ObjectValidationResult, ValidationReport
 from tool_adapters.checksum_adapter import ChecksumAdapter
 
 logger = logging.getLogger(__name__)
+
+# object_type -> dialect query method name returning (schema, name[, ...]) rows
+_EXISTENCE_QUERIES = {
+    "view": "get_views_query",
+    "procedure": "get_procedures_query",
+    "function": "get_functions_query",
+    "trigger": "get_triggers_query",
+}
+
+
+def _fetch_existing_names(dialect_name: str, connection: dict[str, Any], namespace: str) -> dict[str, set[str]]:
+    """Fetch the set of existing object names per type from the target, case-insensitive."""
+    dialect = get_dialect(dialect_name)
+    existing: dict[str, set[str]] = {object_type: set() for object_type in _EXISTENCE_QUERIES}
+    existing["foreign_key"] = set()
+
+    with _connect(dialect_name, connection) as conn:
+        for object_type, query_method in _EXISTENCE_QUERIES.items():
+            cursor = conn.cursor()
+            cursor.execute(getattr(dialect, query_method)(namespace))
+            existing[object_type] = {row[1].lower() for row in cursor.fetchall()}
+            cursor.close()
+
+        cursor = conn.cursor()
+        cursor.execute(dialect.get_foreign_keys_query(namespace))
+        existing["foreign_key"] = {row[0].lower() for row in cursor.fetchall()}
+        cursor.close()
+
+    return existing
+
+
+def _validate_schema_objects(
+    job_id: str,
+    discovery: DiscoveryResult,
+    target_dialect: str,
+    target_connection: dict[str, Any],
+    target_namespace: str,
+) -> list[ObjectValidationResult]:
+    """Check that every discovered view/procedure/function/trigger/foreign_key exists on the target."""
+    objects = [
+        entry for entry in discovery.object_catalog if entry["object_type"] in _EXISTENCE_QUERIES or entry["object_type"] == "foreign_key"
+    ]
+    if not objects:
+        return []
+
+    try:
+        existing = _fetch_existing_names(target_dialect, target_connection, target_namespace)
+    except Exception:
+        logger.exception("[job=%s] Failed to fetch target object catalog for validation", job_id)
+        return [
+            ObjectValidationResult(object_type=entry["object_type"], object_name=entry["name"], status="ERROR")
+            for entry in objects
+        ]
+
+    results: list[ObjectValidationResult] = []
+    for entry in objects:
+        object_type = entry["object_type"]
+        object_name = entry["name"]
+        present = object_name.lower() in existing.get(object_type, set())
+        status = "PRESENT" if present else "MISSING"
+        if status == "MISSING":
+            logger.warning("[job=%s] %s %s: MISSING on target", job_id, object_type, object_name)
+        results.append(ObjectValidationResult(object_type=object_type, object_name=object_name, status=status))
+    return results
 
 
 def validate_data(
@@ -25,7 +93,8 @@ def validate_data(
     source_namespace: str,
     target_namespace: str,
 ) -> ValidationReport:
-    """Validate all tables via checksum comparison; return overall ValidationReport.
+    """Validate all tables via checksum comparison and all other objects via existence
+    check on the target; return a combined ValidationReport.
     
     Args:
         job_id: Migration job ID (for logging)
@@ -38,7 +107,8 @@ def validate_data(
         target_namespace: Target schema/namespace
     
     Returns:
-        ValidationReport with per-table checksum results and mismatch count
+        ValidationReport with per-table checksum results, per-object existence
+        results, and a combined mismatch count
     """
     adapter = ChecksumAdapter()
     table_checksums: list[ChecksumResult] = []
@@ -115,19 +185,28 @@ def validate_data(
 
         table_checksums.append(checksum_result)
 
+    # Check that every non-table object (view/procedure/function/trigger/foreign_key)
+    # the Schema Agent translated actually exists on the target.
+    object_validations = _validate_schema_objects(
+        job_id, discovery, target_dialect, target_connection, target_namespace
+    )
+    mismatches += sum(1 for ov in object_validations if ov.status != "PRESENT")
+
     # Determine overall status
     overall_status = "PASS" if mismatches == 0 else "FAIL"
     
     report = ValidationReport(
         table_checksums=table_checksums,
+        object_validations=object_validations,
         mismatches=mismatches,
         overall_status=overall_status,
     )
     
     logger.info(
-        "[job=%s] Validation complete: %d tables, %d mismatches, status=%s",
+        "[job=%s] Validation complete: %d tables, %d other objects, %d mismatches, status=%s",
         job_id,
         len(tables),
+        len(object_validations),
         mismatches,
         overall_status,
     )

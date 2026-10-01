@@ -13,12 +13,14 @@ FROM apache/seatunnel:${SEATUNNEL_VERSION}
 # from Maven Central into ./connectors instead of relying on that script.
 COPY connectors/*.jar /opt/seatunnel/connectors/
 
-# Vendor JDBC driver jars (Oracle ojdbc11, MySQL Connector/J, PostgreSQL JDBC)
+# Vendor JDBC driver jars (Oracle ojdbc8 -- the image's bundled JRE is Java 8,
+# so ojdbc11 silently fails to register -- MySQL Connector/J, PostgreSQL JDBC)
 # -- fetched by fetch_jdbc_drivers.ps1 into ./jars/ (gitignored: redistribution
 # terms vary per vendor). The base image already bundles older driver jars
-# for the same classes (postgresql-42.4.3.jar, ojdbc8-*.jar) -- remove them
-# first so there's no ambiguity over which version's class the JVM loads.
-RUN rm -f /opt/seatunnel/lib/postgresql-42.4.3.jar /opt/seatunnel/lib/ojdbc8-*.jar
+# for the same classes (postgresql-42.4.3.jar, ojdbc8-*.jar, mysql-connector-
+# java-8.0.27.jar) -- remove them first so there's no ambiguity over which
+# version's class the JVM loads.
+RUN rm -f /opt/seatunnel/lib/postgresql-42.4.3.jar /opt/seatunnel/lib/ojdbc8-*.jar /opt/seatunnel/lib/mysql-connector-java-*.jar
 COPY jars/*.jar /opt/seatunnel/lib/
 
 WORKDIR /opt/seatunnel

@@ -12,6 +12,7 @@ import logging
 import time
 from typing import Any
 
+from dialects import get_dialect
 from dialects.connections import connect
 from tool_adapters.base import (
     AdapterConfig,
@@ -24,6 +25,16 @@ from tool_adapters.base import (
 from tool_adapters.base import JobStatus as AdapterJobStatus
 
 logger = logging.getLogger(__name__)
+
+
+def _quoted_table_path(dialect: str, namespace: str, table_name: str) -> str:
+    """Quote namespace/table per-dialect so the query hits the exact table
+    SeaTunnel created (case-preserving) rather than an unquoted reference,
+    which Postgres/MySQL fold to lowercase -- a different, empty table."""
+    quote = get_dialect(dialect).quote_identifier
+    if namespace:
+        return f"{quote(namespace)}.{quote(table_name)}"
+    return quote(table_name)
 
 
 class ChecksumAdapter(BaseToolAdapter):
@@ -109,10 +120,7 @@ class ChecksumAdapter(BaseToolAdapter):
         self, dialect: str, connection: dict[str, Any], namespace: str, table_name: str
     ) -> int:
         """Fetch row count for a table."""
-        if namespace:
-            table_path = f"{namespace}.{table_name}"
-        else:
-            table_path = table_name
+        table_path = _quoted_table_path(dialect, namespace, table_name)
 
         try:
             with connect(dialect, connection) as conn:
@@ -128,23 +136,32 @@ class ChecksumAdapter(BaseToolAdapter):
     def _compute_checksum(
         self, dialect: str, connection: dict[str, Any], namespace: str, table_name: str
     ) -> str:
-        """Compute MD5 checksum of all rows (concatenated as strings)."""
-        if namespace:
-            table_path = f"{namespace}.{table_name}"
-        else:
-            table_path = table_name
+        """Compute an order-independent MD5 checksum of all rows.
+
+        No ORDER BY: `rowid` is Oracle-only syntax (fails outright on
+        Postgres/MySQL), and even a portable ORDER BY can't guarantee the same
+        row order source vs. target. Instead, stringify each row, sort those
+        strings client-side, then hash the sorted, concatenated result -- same
+        checksum regardless of each DB's physical/query row order.
+        """
+        table_path = _quoted_table_path(dialect, namespace, table_name)
 
         try:
             with connect(dialect, connection) as conn:
                 cursor = conn.cursor()
-                cursor.execute(f"SELECT * FROM {table_path} ORDER BY rowid LIMIT 1000000")
+                # Oracle has no LIMIT keyword (pre-12c has no row-limiting
+                # clause at all beyond ROWNUM); WHERE ROWNUM works on every
+                # Oracle version, unlike FETCH FIRST (12c+ only).
+                limit_clause = (
+                    "WHERE ROWNUM <= 1000000" if dialect == "oracle" else "LIMIT 1000000"
+                )
+                cursor.execute(f"SELECT * FROM {table_path} {limit_clause}")
                 rows = cursor.fetchall()
                 cursor.close()
 
-                # Concatenate all rows as strings and hash
+                row_strings = sorted("|".join(str(v) for v in row) for row in rows)
                 hasher = hashlib.md5()
-                for row in rows:
-                    row_str = "|".join(str(v) for v in row)
+                for row_str in row_strings:
                     hasher.update(row_str.encode("utf-8"))
                 
                 return hasher.hexdigest()
