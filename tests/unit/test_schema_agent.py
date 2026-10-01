@@ -8,7 +8,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
-from agents.schema_agent import LOW_CONFIDENCE_THRESHOLD, translate_schema
+from agents.schema_agent import LOW_CONFIDENCE_THRESHOLD, _sanitize_target_ddl, translate_schema
 from orchestrator.state import DiscoveryResult
 from tool_adapters.base import AdapterConfig, ToolResult
 
@@ -20,6 +20,26 @@ def _discovery_with(catalog: list[dict]) -> DiscoveryResult:
 @contextmanager
 def _fake_metadata_connection():
     yield MagicMock()
+
+
+def test_sanitize_target_ddl_folds_quoted_identifiers_to_lowercase_for_postgresql():
+    # CrackSQL preserves Oracle's uppercase quoted identifiers, but SeaTunnel
+    # creates target Postgres tables/columns unquoted (folded lowercase) --
+    # the translated FK DDL must match or "ALTER TABLE" fails at apply time.
+    ddl = 'ALTER TABLE "DEPARTMENTS" ADD CONSTRAINT "FK_X" FOREIGN KEY ( "MANAGER_ID" ) REFERENCES "EMPLOYEES" ( "EMPLOYEE_ID" )'
+
+    result = _sanitize_target_ddl(ddl, "postgresql")
+
+    assert result == (
+        'ALTER TABLE "departments" ADD CONSTRAINT "fk_x" FOREIGN KEY ( "manager_id" ) '
+        'REFERENCES "employees" ( "employee_id" )'
+    )
+
+
+def test_sanitize_target_ddl_leaves_oracle_target_untouched():
+    ddl = 'ALTER TABLE "DEPARTMENTS" ADD CONSTRAINT "FK_X" FOREIGN KEY ("MANAGER_ID") REFERENCES "EMPLOYEES" ("EMPLOYEE_ID")'
+
+    assert _sanitize_target_ddl(ddl, "oracle") == ddl
 
 
 def test_translate_schema_success_high_confidence():

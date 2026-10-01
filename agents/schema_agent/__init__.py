@@ -31,14 +31,25 @@ logger = logging.getLogger(__name__)
 # relying on CrackSQL for syntax noise that isn't a real translation problem.
 _ORACLE_NOISE_KEYWORDS_RE = re.compile(r"\b(EDITIONABLE|NONEDITIONABLE|FORCE)\b\s*", re.IGNORECASE)
 
+# CrackSQL preserves Oracle's uppercase identifiers inside double quotes
+# (e.g. "DEPARTMENTS", "MANAGER_ID"), but SeaTunnel's JDBC sink creates
+# target Postgres tables/columns unquoted -- which Postgres folds to
+# lowercase. Left as-is, any translated DDL referencing those identifiers
+# (views, triggers, foreign keys) fails with "relation ... does not exist".
+_QUOTED_IDENTIFIER_RE = re.compile(r'"([^"]+)"')
+
 
 def _sanitize_target_ddl(ddl: str, target_dialect: str) -> str:
     """Strip Oracle-only cosmetic DDL keywords when they leak through to a
-    non-Oracle target; a no-op for everything else."""
+    non-Oracle target, and fold quoted identifiers to match the case the
+    target actually created them in; a no-op for everything else."""
     if target_dialect == "oracle" or not ddl:
         return ddl
     cleaned = _ORACLE_NOISE_KEYWORDS_RE.sub("", ddl)
-    return re.sub(r"[ \t]+", " ", cleaned)
+    cleaned = re.sub(r"[ \t]+", " ", cleaned)
+    if target_dialect == "postgresql":
+        cleaned = _QUOTED_IDENTIFIER_RE.sub(lambda m: f'"{m.group(1).lower()}"', cleaned)
+    return cleaned
 
 # Views/procedures/triggers/FKs aren't linked by the (table-only) dependency
 # graph, so apply in this fixed, generally-safe order rather than an inferred

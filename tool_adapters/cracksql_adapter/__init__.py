@@ -18,6 +18,7 @@ objects translated across threads) don't race on cwd.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import threading
@@ -34,6 +35,8 @@ from tool_adapters.base import (
     ToolResult,
 )
 from tool_adapters.base import JobStatus as AdapterJobStatus
+
+logger = logging.getLogger(__name__)
 
 CRACKSQL_HOME = os.path.dirname(os.path.abspath(__file__))
 _CRACKSQL_LOCK = threading.Lock()
@@ -154,6 +157,11 @@ class CrackSQLAdapter(BaseToolAdapter):
             # misconfiguration, etc.) -- fall back to CrackSQL's deterministic
             # sqlglot-only rule_rewrite so the caller always gets *something*
             # rather than blocking the whole batch on one bad object.
+            logger.warning(
+                "[Hybrid translation FAILED] source_sql=%s (first 100 chars), error: %s",
+                source_sql[:100] if source_sql else "?",
+                str(exc),
+            )
             try:
                 with _cracksql_cwd():
                     fallback = translate(

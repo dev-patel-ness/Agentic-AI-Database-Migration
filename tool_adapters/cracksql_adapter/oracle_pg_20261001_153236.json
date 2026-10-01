@@ -1,0 +1,11 @@
+{
+    "info": {
+        "src_dialect": "oracle",
+        "tgt_dialect": "pg",
+        "src_sql": "\n  CREATE OR REPLACE EDITIONABLE FUNCTION \"SAMPLE_USER\".\"GET_EMPLOYEE_COUNT\" (dept_id IN NUMBER) RETURN NUMBER IS\n    emp_count NUMBER;\nBEGIN\n    SELECT COUNT(*) INTO emp_count FROM employees WHERE department_id = dept_id;\n    RETURN emp_count;\nEND;",
+        "model_name": null,
+        "vector_config": null,
+        "tgt_db_config": null
+    },
+    "process_data": []
+}
