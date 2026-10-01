@@ -74,6 +74,23 @@ def test_sanitize_target_ddl_leaves_oracle_target_untouched():
     assert _sanitize_target_ddl(ddl, "oracle") == ddl
 
 
+def test_sanitize_target_ddl_maps_source_schema_to_target_schema_for_postgresql():
+    # When translating from Oracle to Postgres, schema names must be mapped:
+    # Oracle: SAMPLE_USER.ACTIVE_EMPLOYEES → Postgres: sample.active_employees
+    # Schema mapping happens BEFORE case-folding so we can match the original case
+    ddl = 'CREATE OR REPLACE VIEW "SAMPLE_USER"."ACTIVE_EMPLOYEES" ("ID") AS SELECT id FROM "SAMPLE_USER"."EMPLOYEES"'
+
+    result = _sanitize_target_ddl(
+        ddl, "postgresql", source_schema="SAMPLE_USER", target_schema="sample"
+    )
+
+    # Schema should be mapped to lowercase target schema
+    assert '"sample"."active_employees"' in result
+    assert '"sample"."employees"' in result
+    # Original schema name should not appear
+    assert "SAMPLE_USER" not in result
+
+
 def test_translate_schema_success_high_confidence():
     discovery = _discovery_with(
         [{"object_type": "view", "name": "v1", "schema": "public", "definition": "CREATE VIEW v1 AS SELECT 1"}]
@@ -94,6 +111,48 @@ def test_translate_schema_success_high_confidence():
     assert translation.average_confidence == 0.95
     assert translation.translated_objects[0]["status"] == "SUCCESS"
     assert low_confidence == []
+
+
+def test_translate_schema_maps_catalog_schema_key_to_target_schema():
+    """Regression test: the catalog entry's schema key is "schema" (set by
+    schema_extractor_adapter), not "schema_name" -- translate_schema must read
+    the right key or source_schema is always None and the mapping in
+    _sanitize_target_ddl silently never fires."""
+    discovery = _discovery_with(
+        [
+            {
+                "object_type": "view",
+                "name": "ACTIVE_EMPLOYEES",
+                "schema": "SAMPLE_USER",
+                "definition": "CREATE VIEW \"SAMPLE_USER\".\"ACTIVE_EMPLOYEES\" AS SELECT 1",
+            }
+        ]
+    )
+    fake_adapter = MagicMock()
+    fake_adapter.prepare.return_value = AdapterConfig(options={})
+    fake_adapter.run.return_value = ToolResult(
+        success=True,
+        output={
+            "translated_sql": 'CREATE VIEW "SAMPLE_USER"."ACTIVE_EMPLOYEES" AS SELECT 1',
+            "method": "local_to_global",
+        },
+        confidence_score=0.95,
+    )
+
+    with patch("agents.schema_agent.CrackSQLAdapter", return_value=fake_adapter), patch(
+        "agents.schema_agent.metadata_connection", _fake_metadata_connection
+    ):
+        translation, _ = translate_schema(
+            "job-1",
+            discovery,
+            "oracle",
+            "postgresql",
+            target_connection={"schema_name": "sample"},
+        )
+
+    translated_ddl = translation.translated_objects[0]["translated_ddl"]
+    assert '"sample"."active_employees"' in translated_ddl
+    assert "SAMPLE_USER" not in translated_ddl
 
 
 def test_translate_schema_skips_tables_without_calling_adapter():
@@ -274,3 +333,64 @@ def test_apply_schema_translations_noop_when_nothing_pending():
 
     assert results == []
     fake_connect.assert_not_called()
+
+
+def test_sanitize_target_ddl_unescapes_json_escape_sequences():
+    """Regression test: CrackSQL may return DDL with JSON escape sequences
+    (\\n, \\t, \\", \\\\, etc.). These must be unescaped so PostgreSQL can
+    parse actual newlines instead of literal 'backslash n' sequences.
+    Example: 'CREATE VIEW ... AS \\nSELECT ...' must become 'CREATE VIEW ... AS \nSELECT ...'
+    """
+    # Simulate CrackSQL returning DDL with escaped newlines
+    ddl_with_escaped_newlines = 'CREATE OR REPLACE VIEW "sample"."active_employees" AS \\nSELECT \\n  id, name \\nFROM employees'
+    
+    result = _sanitize_target_ddl(ddl_with_escaped_newlines, "postgresql")
+    
+    # After unescaping, should contain actual newlines, not literal \\n sequences
+    assert "\\n" not in result  # No literal backslash-n
+    assert "\n" in result  # Actual newlines present
+    assert "CREATE OR REPLACE VIEW" in result
+    assert "FROM employees" in result
+    # SQL should be properly formatted with actual line breaks
+    lines = result.split("\n")
+    assert len(lines) > 1  # Should have multiple lines after unescaping
+
+
+def test_apply_schema_translations_treats_duplicate_fk_as_idempotent():
+    """Regression test: FK constraints that already exist on the target
+    (from a previous run or incomplete cleanup) should be treated as
+    idempotent success, not hard failure. This allows replay/retry
+    scenarios to proceed without manual cleanup.
+    """
+    from agents.schema_agent import apply_schema_translations
+
+    pending = [
+        {
+            "id": "fk-1",
+            "object_type": "foreign_key",
+            "object_name": "fk_departments_manager",
+            "target_ddl": "ALTER TABLE departments ADD CONSTRAINT fk_departments_manager ...",
+        }
+    ]
+    
+    fake_cursor = MagicMock()
+    # Simulate "constraint already exists" error
+    fake_cursor.execute.side_effect = Exception('constraint "fk_departments_manager" for relation "departments" already exists')
+    fake_target_conn = MagicMock()
+    fake_target_conn.cursor.return_value = fake_cursor
+
+    with patch("agents.schema_agent.metadata_connection", _fake_metadata_connection), patch(
+        "agents.schema_agent.fetch_applicable_translations", return_value=pending
+    ), patch("agents.schema_agent.mark_translation_applied") as fake_mark, patch(
+        "agents.schema_agent._connect", return_value=fake_target_conn
+    ):
+        results = apply_schema_translations("job-1", "postgresql", {"host": "localhost"})
+
+    # Should be treated as APPLIED (idempotent), not APPLY_FAILED
+    assert len(results) == 1
+    assert results[0]["status"] == "APPLIED"
+    assert results[0]["object_name"] == "fk_departments_manager"
+    # mark_translation_applied should be called with APPLIED status
+    assert fake_mark.called
+    call_args = fake_mark.call_args[0]
+    assert call_args[2] == "APPLIED"  # Second positional arg is status

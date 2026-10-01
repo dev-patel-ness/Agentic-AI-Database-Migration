@@ -44,7 +44,7 @@ _SAMPLE_DEFAULTS: dict[str, dict[str, Any]] = {
         "username": "sample_user",
         "password": "oracle_dev_password",
         "database": "XEPDB1",
-        "schema_name": "",
+        "schema_name": "sample_user",
     },
 }
 
@@ -229,7 +229,45 @@ def _render_schema_translation(translation: dict[str, Any]) -> None:
     st.metric("Avg. translation confidence", f"{avg_conf:.2f}" if avg_conf is not None else "n/a")
     status_counts = Counter(o["status"] for o in objects)
     st.write(", ".join(f"{count} {status}" for status, count in status_counts.items()) or "no objects")
-    with st.expander(f"Translated objects ({len(objects)})"):
+    
+    # Filter objects with actual DDL translations (not skipped tables)
+    ddl_objects = [o for o in objects if o.get("status") != "SKIPPED_TABLE" and o.get("translated_ddl")]
+    
+    if ddl_objects:
+        with st.expander(f"📝 View Source & Target DDL ({len(ddl_objects)} objects)"):
+            st.markdown("**Side-by-side schema comparison: Source SQL → Target SQL**")
+            
+            # Create tabs for each object with DDL
+            tabs = st.tabs([f"{o['object_name']} ({o['object_type']})" for o in ddl_objects])
+            
+            for tab, obj in zip(tabs, ddl_objects):
+                with tab:
+                    col1, col2 = st.columns(2)
+                    
+                    # Source DDL
+                    with col1:
+                        st.markdown("**Source DDL**")
+                        source_ddl = obj.get("source_ddl", "N/A")
+                        st.code(source_ddl or "No DDL available", language="sql")
+                    
+                    # Target DDL
+                    with col2:
+                        st.markdown("**Target DDL**")
+                        target_ddl = obj.get("translated_ddl", "N/A")
+                        confidence = obj.get("confidence")
+                        if confidence is not None:
+                            conf_color = "🟢" if confidence >= 0.8 else "🟡" if confidence >= 0.7 else "🔴"
+                            st.caption(f"Confidence: {conf_color} {confidence:.2f}")
+                        st.code(target_ddl or "No DDL available", language="sql")
+                    
+                    # Additional metadata
+                    st.divider()
+                    meta_col1, meta_col2, meta_col3 = st.columns(3)
+                    meta_col1.metric("Type", obj.get("object_type", "unknown"))
+                    meta_col2.metric("Status", obj.get("status", "unknown"))
+                    meta_col3.metric("Method", obj.get("method", "N/A") or "N/A")
+    
+    with st.expander(f"Translated objects summary ({len(objects)})"):
         st.dataframe(
             [
                 {

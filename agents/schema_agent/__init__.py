@@ -49,14 +49,44 @@ def _strip_oracle_noise(ddl: str) -> str:
     return re.sub(r"[ \t]+", " ", cleaned)
 
 
-def _sanitize_target_ddl(ddl: str, target_dialect: str) -> str:
+def _sanitize_target_ddl(
+    ddl: str,
+    target_dialect: str,
+    source_schema: Optional[str] = None,
+    target_schema: Optional[str] = None,
+) -> str:
     """Strip Oracle-only cosmetic DDL keywords when they leak through to a
-    non-Oracle target, and fold quoted identifiers to match the case the
-    target actually created them in; a no-op for everything else."""
+    non-Oracle target, map source schema name to target schema name, fold
+    quoted identifiers to match target's case conventions, and unescape JSON
+    escape sequences (which CrackSQL may return in translated DDL).
+    
+    Args:
+        ddl: The translated DDL to sanitize
+        target_dialect: The target dialect (e.g., 'postgresql', 'oracle')
+        source_schema: The source schema name (e.g., 'SAMPLE_USER') to replace
+        target_schema: The target schema name (e.g., 'sample') to replace with
+    """
     if target_dialect == "oracle" or not ddl:
         return ddl
-    cleaned = _strip_oracle_noise(ddl)
+    
+    # Unescape JSON escape sequences that may come from CrackSQL's output
+    # (e.g., \n → actual newline, \t → tab, \" → quote, \\ → backslash)
+    cleaned = ddl.encode('utf-8').decode('unicode_escape')
+    
+    cleaned = _strip_oracle_noise(cleaned)
     if target_dialect == "postgresql":
+        # Map source schema name to target schema name BEFORE case-folding
+        # so we can match the original case from the source dialect
+        if source_schema and target_schema:
+            # Replace quoted schema names: "SAMPLE_USER"."table" → "sample"."table"
+            # Use case-insensitive match to handle UPPERCASE, lowercase, or MixedCase
+            cleaned = re.sub(
+                f'"{re.escape(source_schema)}"(?=\\W)',
+                f'"{target_schema.lower()}"',
+                cleaned,
+                flags=re.IGNORECASE,
+            )
+        # AFTER schema mapping, fold all remaining quoted identifiers to lowercase
         cleaned = _QUOTED_IDENTIFIER_RE.sub(lambda m: f'"{m.group(1).lower()}"', cleaned)
     return cleaned
 
@@ -195,7 +225,11 @@ def translate_schema(
 
             translated_sql = result.output.get("translated_sql")
             if translated_sql:
-                translated_sql = _sanitize_target_ddl(translated_sql, target_dialect)
+                source_schema = entry.get("schema")  # catalog key is "schema", not "schema_name"
+                target_schema = target_connection.get("schema_name") if target_connection else None
+                translated_sql = _sanitize_target_ddl(
+                    translated_sql, target_dialect, source_schema, target_schema
+                )
             confidence = result.confidence_score
             status = "SUCCESS" if translated_sql else "FAILED"
             translated_objects.append(
@@ -224,6 +258,87 @@ def translate_schema(
     )
 
 
+def _topological_sort_by_dependencies(
+    pending: list[dict[str, Any]], job_id: str
+) -> list[dict[str, Any]]:
+    """Sort objects respecting both type-based priority (_APPLY_ORDER) and
+    actual source-code dependencies. Objects with dependencies are ordered
+    after their dependencies (respecting _APPLY_ORDER for type-based grouping).
+    """
+    if not pending:
+        return pending
+
+    # Build a dependency map by querying the object catalog
+    name_to_deps: dict[str, list[str]] = {}
+    with metadata_connection() as conn:
+        for row in pending:
+            object_name = row["object_name"]
+            try:
+                result = conn.execute(
+                    "SELECT dependencies FROM object_catalog_entries WHERE job_id = %s AND object_name = %s LIMIT 1",
+                    (job_id, object_name),
+                )
+                row_data = result.fetchone()
+                if row_data and row_data[0]:
+                    # dependencies is a PostgreSQL array, stored as text
+                    deps_text = row_data[0]
+                    if isinstance(deps_text, str):
+                        # Parse PostgreSQL array format: "{dep1,dep2,dep3}" or similar
+                        deps = [d.strip('"{} ') for d in deps_text.split(',') if d.strip('"{} ')]
+                        name_to_deps[object_name] = [d for d in deps if d]
+                    else:
+                        name_to_deps[object_name] = list(deps_text) if deps_text else []
+                else:
+                    name_to_deps[object_name] = []
+            except Exception as e:
+                logger.warning(
+                    "Failed to fetch dependencies for %s in job %s: %s", object_name, job_id, e
+                )
+                name_to_deps[object_name] = []
+
+    # First sort by type order (already done by caller), then by dependencies
+    # within each type group
+    name_to_row = {row["object_name"]: row for row in pending}
+    type_groups: dict[int, list[dict[str, Any]]] = {}
+    for row in pending:
+        type_order = _APPLY_ORDER.get(row["object_type"], 99)
+        if type_order not in type_groups:
+            type_groups[type_order] = []
+        type_groups[type_order].append(row)
+
+    # Topological sort within each type group
+    def topo_sort_group(group: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Topological sort a group of objects by dependencies."""
+        if len(group) <= 1:
+            return group
+        
+        visited: set[str] = set()
+        sorted_group: list[dict[str, Any]] = []
+        
+        def visit(obj_name: str) -> None:
+            if obj_name in visited:
+                return
+            visited.add(obj_name)
+            deps = name_to_deps.get(obj_name, [])
+            for dep in deps:
+                if dep in name_to_row and name_to_row[dep]["object_type"] == group[0]["object_type"]:
+                    # Only enforce order if dep is in the same type group
+                    visit(dep)
+            if obj_name in name_to_row:
+                sorted_group.append(name_to_row[obj_name])
+        
+        for row in group:
+            visit(row["object_name"])
+        
+        return sorted_group
+
+    result: list[dict[str, Any]] = []
+    for type_order in sorted(type_groups.keys()):
+        result.extend(topo_sort_group(type_groups[type_order]))
+
+    return result
+
+
 def apply_schema_translations(
     job_id: str,
     target_dialect: str,
@@ -241,13 +356,15 @@ def apply_schema_translations(
     those are meant for a human pass, not blind execution against the target.
 
     One bad object must never block the rest of the batch -- each DDL
-    statement is executed and committed independently.
+    statement is executed and committed independently. Duplicate constraint
+    errors (common in replay scenarios) are treated as idempotent success.
     """
     skip_names = set(manual_review_objects or [])
     results: list[dict[str, Any]] = []
     with metadata_connection() as meta_conn:
         pending = fetch_applicable_translations(meta_conn, job_id)
-        pending.sort(key=lambda row: _APPLY_ORDER.get(row["object_type"], 99))
+        # Sort by both type order and dependencies
+        pending = _topological_sort_by_dependencies(pending, job_id)
 
         if not pending:
             return results
@@ -271,18 +388,33 @@ def apply_schema_translations(
                     results.append({"object_type": object_type, "object_name": object_name, "status": "APPLIED"})
                 except Exception as exc:
                     target_conn.rollback()
-                    logger.exception(
-                        "job=%s: failed to apply translated DDL for %s %s", job_id, object_type, object_name
-                    )
-                    mark_translation_applied(meta_conn, row["id"], "APPLY_FAILED", str(exc))
-                    results.append(
-                        {
-                            "object_type": object_type,
-                            "object_name": object_name,
-                            "status": "APPLY_FAILED",
-                            "error": str(exc),
-                        }
-                    )
+                    exc_str = str(exc)
+                    
+                    # Idempotent: if constraint already exists (common in replay/retry),
+                    # treat as success since it's the same constraint being (re)created
+                    if object_type == "foreign_key" and "already exists" in exc_str.lower():
+                        logger.info(
+                            "job=%s: FK %s already exists on target (idempotent), marking APPLIED",
+                            job_id,
+                            object_name,
+                        )
+                        mark_translation_applied(meta_conn, row["id"], "APPLIED")
+                        results.append(
+                            {"object_type": object_type, "object_name": object_name, "status": "APPLIED"}
+                        )
+                    else:
+                        logger.exception(
+                            "job=%s: failed to apply translated DDL for %s %s", job_id, object_type, object_name
+                        )
+                        mark_translation_applied(meta_conn, row["id"], "APPLY_FAILED", exc_str)
+                        results.append(
+                            {
+                                "object_type": object_type,
+                                "object_name": object_name,
+                                "status": "APPLY_FAILED",
+                                "error": exc_str,
+                            }
+                        )
         finally:
             target_conn.close()
     return results

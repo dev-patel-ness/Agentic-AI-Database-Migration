@@ -150,7 +150,7 @@ sink {{
     database = "{target_connection.get("database", "")}"
     table = "{target_table_path}"
     schema_save_mode = "CREATE_SCHEMA_WHEN_NOT_EXIST"
-    data_save_mode = "APPEND_DATA"
+    data_save_mode = "DROP_DATA"
     source_table_name = "src"
   }}
 }}

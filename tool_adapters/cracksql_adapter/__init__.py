@@ -188,16 +188,85 @@ class CrackSQLAdapter(BaseToolAdapter):
         translated_sql, model_ans_list, used_pieces, lift_histories = result
 
         if translated_sql == FAILED_TEMPLATE:
-            return ToolResult(
-                success=True,  # adapter executed fine; the *object* just couldn't be translated
-                output={
-                    "translated_sql": None,
-                    "method": "local_to_global" if target_db_config else "direct_llm",
-                    "note": "CrackSQL could not produce a valid translation for this object",
-                },
-                confidence_score=0.0,
-                execution_time_seconds=time.monotonic() - start,
-            )
+            # Hybrid validation failed, but if we were using target_db_config,
+            # try pure LLM mode (direct_llm without validation) as fallback.
+            # Never report confidence 0.0 if we can get *something* usable.
+            if target_db_config:
+                logger.info(
+                    "[Hybrid validation FAILED for %s -> %s] retrying with pure LLM mode (no DB validation)",
+                    source_dialect, target_dialect
+                )
+                try:
+                    with _cracksql_cwd():
+                        llm_only_result = translate(
+                            src_sql=source_sql,
+                            src_dialect=source_dialect,
+                            tgt_dialect=target_dialect,
+                            model_name=model_name,
+                            target_db_config=None,  # Pure LLM, no validation
+                            vector_config=vector_config,
+                            out_dir="./instance/translations",
+                            retrieval_on=True,
+                            top_k=3,
+                            max_retry_time=2,
+                        )
+                    llm_translated_sql, llm_model_ans_list, llm_used_pieces, llm_lift_histories = llm_only_result
+                    if llm_translated_sql and llm_translated_sql != FAILED_TEMPLATE:
+                        # Use the LLM-only result but mark it as fallback with confidence penalty
+                        confidences = _extract_confidences(llm_model_ans_list, TRANSLATION_ANSWER_PATTERN)
+                        if confidences:
+                            confidence = sum(confidences) / len(confidences)
+                        else:
+                            confidence = 0.75
+                        confidence = max(0.0, confidence - 0.1 * len(llm_lift_histories))
+                        # Penalty for hybrid validation failure
+                        confidence = max(0.2, confidence - 0.15)
+                        return ToolResult(
+                            success=True,
+                            output={
+                                "translated_sql": llm_translated_sql,
+                                "method": "direct_llm_fallback",
+                                "note": "hybrid validation failed, using pure LLM result",
+                                "used_pieces": len(llm_used_pieces),
+                                "lift_count": len(llm_lift_histories),
+                            },
+                            confidence_score=round(confidence, 4),
+                            execution_time_seconds=time.monotonic() - start,
+                        )
+                except Exception as llm_exc:
+                    logger.warning(
+                        "[Pure LLM fallback also failed] hybrid failed, LLM fallback raised: %s",
+                        str(llm_exc)
+                    )
+                    # If pure LLM also fails, fall through to rule-only below
+
+            # Last resort: try rule-only fallback if we haven't already
+            try:
+                with _cracksql_cwd():
+                    rule_fallback = translate(
+                        src_sql=source_sql, src_dialect=source_dialect, tgt_dialect=target_dialect
+                    )
+                rule_translated_sql = rule_fallback if isinstance(rule_fallback, str) else rule_fallback[0]
+                return ToolResult(
+                    success=True,
+                    output={
+                        "translated_sql": rule_translated_sql,
+                        "method": "rule_only_fallback",
+                        "note": "hybrid validation failed, using rule-only fallback",
+                    },
+                    confidence_score=0.5,
+                    execution_time_seconds=time.monotonic() - start,
+                )
+            except Exception as rule_exc:
+                logger.error(
+                    "[All translation methods exhausted] hybrid FAILED, LLM fallback FAILED, rule fallback FAILED: %s",
+                    str(rule_exc)
+                )
+                return ToolResult(
+                    success=False,
+                    error=f"All translation methods failed: hybrid returned FAILED_TEMPLATE, LLM fallback failed, rule fallback failed ({rule_exc})",
+                    execution_time_seconds=time.monotonic() - start,
+                )
 
         confidences = _extract_confidences(model_ans_list, TRANSLATION_ANSWER_PATTERN)
         if confidences:

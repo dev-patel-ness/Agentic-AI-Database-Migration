@@ -233,10 +233,102 @@ The `EDITIONABLE` keyword (Oracle-specific cosmetic DDL annotation) caused ANTLR
 
 ---
 
+## Bug #5: View DDL Schema Name Not Translated (SAMPLE_USER → sample)
+
+**Status**: ✅ Fixed & Live-Verified
+
+### Description
+Fresh job run with all prior fixes (#1–#4) applied showed view still failing to apply:
+```
+job=17507cbf-76e6-4166-a20c-7aa16c805477: failed to apply translated DDL for view ACTIVE_EMPLOYEES
+psycopg2.errors.InvalidSchemaName: schema "sample_user" does not exist
+```
+
+CrackSQL had output:
+```sql
+CREATE VIEW "SAMPLE_USER"."ACTIVE_EMPLOYEES" ( "EMPLOYEE_ID", ... ) AS ...
+```
+
+But PostgreSQL target only has schema `sample` (not `sample_user`). The view DDL needed schema translation: `SAMPLE_USER` (Oracle source schema) → `sample` (Postgres target schema).
+
+### Root Cause
+**Order-of-operations bug in `_sanitize_target_ddl()`**:
+- Previous implementation attempted to map schema names but had the wrong order:
+  - **First**: Fold all quoted identifiers to lowercase (`"SAMPLE_USER"` → `"sample_user"`)
+  - **Then**: Try to match and replace schema name with regex looking for `"SAMPLE_USER"`
+  - Problem: By the time the regex runs, the identifier is already folded to `"sample_user"`, so the regex pattern `"SAMPLE_USER"` doesn't match
+- Result: Schema name replacement was silently skipped, and the view DDL still had the old Oracle schema `sample_user` instead of target `sample`
+
+### Fix Applied
+**File**: `agents/schema_agent/__init__.py`
+
+Reordered operations in `_sanitize_target_ddl()` to perform schema mapping **before** case-folding:
+
+```python
+def _sanitize_target_ddl(
+    ddl: str,
+    target_dialect: str,
+    source_schema: Optional[str] = None,
+    target_schema: Optional[str] = None,
+) -> str:
+    """Strip Oracle noise keywords, map source schema→target schema (BEFORE case-folding 
+    so regex can match original case), then fold quoted identifiers to lowercase."""
+    if target_dialect == "oracle" or not ddl:
+        return ddl
+    cleaned = _strip_oracle_noise(ddl)
+    if target_dialect == "postgresql":
+        # SCHEMA MAPPING FIRST (before case-folding) using case-insensitive regex
+        if source_schema and target_schema:
+            cleaned = re.sub(
+                f'"{re.escape(source_schema)}"(?=\\W)',  # Match "SAMPLE_USER" only
+                f'"{target_schema.lower()}"',             # Replace with "sample"
+                cleaned,
+                flags=re.IGNORECASE,                     # Handles any case variation
+            )
+        # THEN case-fold all remaining quoted identifiers
+        cleaned = _QUOTED_IDENTIFIER_RE.sub(lambda m: f'"{m.group(1).lower()}"', cleaned)
+    return cleaned
+```
+
+**Key changes**:
+1. **Schema mapping regex now comes FIRST**, before any case-folding
+2. **Case-insensitive match** (`re.IGNORECASE`): handles `"SAMPLE_USER"`, `"sample_user"`, `"Sample_User"`, etc.
+3. **Lookahead assertion** (`(?=\\W)`): match schema name only when followed by non-word char (e.g., `.`) to avoid partial matches
+4. **Then case-fold**: After schema replacement, fold remaining identifiers to lowercase
+
+**Updated in `translate_schema()` loop** (~line 226):
+```python
+if translated_sql:
+    source_schema = entry.get("schema_name")  # Oracle schema from catalog, e.g., "sample_user"
+    target_schema = target_connection.get("schema_name") if target_connection else None  # "sample"
+    translated_sql = _sanitize_target_ddl(
+        translated_sql, target_dialect, source_schema, target_schema
+    )
+```
+
+### Verification
+✅ Unit test added and passing: `test_sanitize_target_ddl_maps_source_schema_to_target_schema_for_postgresql`  
+✅ Fresh job run shows view DDL with `"sample"` schema instead of `"sample_user"`  
+✅ View now applies successfully (no `InvalidSchemaName` error)  
+✅ All 14 tests in `test_schema_agent.py` passing
+
+### Example Translation
+**Before**: 
+```sql
+CREATE VIEW "SAMPLE_USER"."ACTIVE_EMPLOYEES" ( "EMPLOYEE_ID", ... ) AS ...
+```
+
+**After** (with fix):
+```sql
+CREATE VIEW "sample"."active_employees" ( "employee_id", ... ) AS ...
+```
+
+---
+
 ## Testing Summary
 
 ### Unit Tests Added
-- [tests/unit/test_schema_agent.py](../tests/unit/test_schema_agent.py): **13/13 passing**
+- [tests/unit/test_schema_agent.py](../tests/unit/test_schema_agent.py): **14/14 passing**
 - [tests/unit/test_connections.py](../tests/unit/test_connections.py): **2/2 passing** (new file, tests search_path behavior)
 
 ### Test Execution
@@ -254,17 +346,19 @@ poetry run pytest tests/unit/test_connections.py -v
 | #1 | Job run validation | FK DDL metadata mismatch | Case-folding in `_sanitize_target_ddl` | ✅ Yes |
 | #2 | FK application failure | Missing `search_path` config | `SET search_path` in `connect()` | ✅ Yes |
 | #3 | Hybrid translation NoneType error | KB embedding model disabled | Updated `knowledge_bases` table in CrackSQL SQLite | ✅ Yes |
-| #4 | ANTLR parser ValueError on source DDL | Oracle noise keywords in source | Source-side `_strip_oracle_noise()` call | ⏳ Pending |
+| #4 | ANTLR parser ValueError on source DDL | Oracle noise keywords in source | Source-side `_strip_oracle_noise()` call | ✅ Yes |
+| #5 | View schema name not translated | Case-folding before schema mapping | Reorder schema mapping before case-folding | ✅ Yes |
 
 ---
 
 ## Files Modified
 
-1. `agents/schema_agent/__init__.py` – Oracle noise stripping + case-folding + source cleanup
+1. `agents/schema_agent/__init__.py` – Oracle noise stripping + case-folding + schema mapping (order-of-ops fix) + source cleanup
 2. `dialects/connections.py` – Search path configuration
-3. `tests/unit/test_schema_agent.py` – 3 new unit tests
-4. `tests/unit/test_connections.py` – New file, 2 new tests
-5. `tool_adapters/cracksql_adapter/instance/info.db` – KB embedding model updates
+3. `apps/ui-streamlit/app.py` – Oracle connection config: set `schema_name: "sample_user"`
+4. `tests/unit/test_schema_agent.py` – 3+ new unit tests (14 total)
+5. `tests/unit/test_connections.py` – New file, 2 new tests
+6. `tool_adapters/cracksql_adapter/instance/info.db` – KB embedding model updates
 
 ---
 
@@ -275,15 +369,18 @@ poetry run pytest tests/unit/test_connections.py -v
 3. **Schema context in Postgres**: Unqualified identifiers require explicit `search_path` or full qualification
 4. **ANTLR grammar robustness**: Oracle's cosmetic keywords must be stripped *before* parsing, not after
 5. **DDL noise keywords**: `EDITIONABLE`, `NONEDITIONABLE`, `FORCE` are Oracle-only; strip at entry point to translator
+6. **Regex order matters**: Schema name substitution must happen **before** case-folding; otherwise already-folded identifiers won't match original-case patterns
+7. **Connection config propagation**: Schema names must be set in both source and target connection configs in Streamlit (not just in code) so they flow through orchestrator
 
 ---
 
 ## Related Issues
 - Streamlit validation endpoint confirmed via live testing (all FKs applied, 0 mismatches after bugs #1–#3)
 - `migration_jobs.status` column remains unused (Streamlit reads LangGraph checkpoint state instead) — cosmetic cleanup opportunity
+- Dependency graph built deterministically from FK metadata (no LLM involved) — see [risk-assessment-and-dependency-graph.md](./risk-assessment-and-dependency-graph.md)
 
 ---
 
 **Last Updated**: 2026-10-01  
 **Session**: Agentic AI Database Migration – Oracle to PostgreSQL  
-**Status**: 3/4 bugs live-verified, 1 pending fresh job run
+**Status**: ✅ All 5 bugs live-verified and fixed

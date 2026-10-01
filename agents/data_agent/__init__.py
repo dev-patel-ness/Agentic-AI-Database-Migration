@@ -24,6 +24,55 @@ from tool_adapters.seatunnel_adapter import SeaTunnelAdapter
 logger = logging.getLogger(__name__)
 
 
+def _topological_sort_tables(
+    tables: list[dict[str, Any]], dependency_graph: dict[str, list[str]], job_id: str
+) -> list[dict[str, Any]]:
+    """Order tables so FK-referenced (parent) tables load before their
+    dependents, per the FK dependency graph schema_extractor_adapter built
+    during discovery. Falls back to catalog order for any table caught in a
+    cycle (e.g. DEPARTMENTS.manager_id -> EMPLOYEES while EMPLOYEES.dept_id ->
+    DEPARTMENTS) rather than failing the batch -- SeaTunnel only loads rows,
+    it doesn't enforce FK constraints, so load order here is a best-effort
+    correctness improvement (avoids transient orphaned-FK data), not a hard
+    requirement the way DDL application order is.
+    """
+    names = [t["name"] for t in tables]
+    name_set = set(names)
+    by_name = {t["name"]: t for t in tables}
+
+    deps = {n: [d for d in dependency_graph.get(n, []) if d in name_set and d != n] for n in names}
+    children: dict[str, list[str]] = {n: [] for n in names}
+    for n in names:
+        for d in deps[n]:
+            children[d].append(n)
+    in_degree = {n: len(deps[n]) for n in names}
+
+    remaining = set(names)
+    ready = [n for n in names if in_degree[n] == 0]
+    ordered: list[str] = []
+    while ready:
+        ready.sort(key=names.index)  # stable: preserve catalog order among same-degree tables
+        current = ready.pop(0)
+        remaining.discard(current)
+        ordered.append(current)
+        for child in children[current]:
+            in_degree[child] -= 1
+            if in_degree[child] == 0 and child in remaining:
+                ready.append(child)
+
+    if remaining:
+        logger.warning(
+            "job=%s: FK dependency cycle detected among tables %s, falling back to catalog "
+            "order for them",
+            job_id,
+            sorted(remaining),
+        )
+        ordered.extend(n for n in names if n in remaining)
+
+    return [by_name[n] for n in ordered]
+
+
+
 def migrate_data(
     job_id: str,
     discovery: DiscoveryResult,
@@ -40,6 +89,12 @@ def migrate_data(
     target_namespace = default_namespace(target_dialect, target_connection)
 
     tables = [entry for entry in discovery.object_catalog if entry["object_type"] == "table"]
+    tables = _topological_sort_tables(tables, discovery.dependency_graph, job_id)
+    logger.info(
+        "job=%s: table load order (dependency-graph sorted): %s",
+        job_id,
+        [t["name"] for t in tables],
+    )
     table_results: list[dict[str, Any]] = []
     total_rows = 0
 
