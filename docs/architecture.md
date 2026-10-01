@@ -23,6 +23,7 @@
 14. [Security Considerations](#14-security-considerations)
 15. [Extensibility: Adding New Features](#15-extensibility-adding-new-features)
 16. [Open Questions / Future Work](#16-open-questions--future-work)
+17. [Implementation Status](#17-implementation-status)
 
 ---
 
@@ -764,3 +765,44 @@ The rule of thumb: **agents change when workflow phases change; adapters change 
 - Cost controls/guardrails for Bedrock usage during large-schema translation (batching, caching CrackSQL LLM fallbacks).
 - Formal risk-scoring rubric for the Planner Agent's "High Risk Objects" classification (currently rule-based + LLM judgment — needs calibration against historical migrations).
 - Disaster-recovery plan for the platform's own metadata DB (checkpoints) independent of the migration's source/target DBs.
+
+---
+
+## 17. Implementation Status
+
+This section tracks which parts of the design above are real, working code vs. still a stub/placeholder, as of 2026-10-01. Kept up to date so this doc stays trustworthy rather than purely aspirational.
+
+### ✅ Implemented
+
+| Area | Notes |
+|---|---|
+| Orchestration (LangGraph `StateGraph`, Postgres checkpointer, bounded retry) | Full graph topology + pause/resume works; `orchestrator/graph.py`, `orchestrator/checkpointer.py`, `orchestrator/retry.py` |
+| FastAPI gateway + Streamlit UI | Job create/status/review endpoints; review screens; DDL viewer; progress polling |
+| Assessment Agent + `schema_extractor_adapter` | Real DDL export + sqlglot parse → object catalog + FK dependency graph, for Oracle/MySQL/PostgreSQL |
+| Planner Agent (`risk.py` + `llm.py`) | Deterministic heuristic risk scoring + Bedrock Nova Pro refinement for medium/high objects, RAG-backed |
+| Schema Agent + `cracksql_adapter` | Hybrid AST+LLM translation with confidence scores, idempotent DDL re-apply, schema/case/escape sanitization |
+| Knowledge Base (ingestion + retrieval) | PGVector + Titan Embeddings v2, dialect-pair-aware retrieval, 21 seed documents |
+| Data Agent + `seatunnel_adapter` | Bulk (batch) load only, FK-dependency-ordered table load, idempotent re-run (`DROP_DATA`) |
+| Validation Agent + `checksum_adapter` | Row-count/checksum reconciliation, `ValidationReport`, Prometheus metrics |
+| Human-in-the-loop gates | `HumanReviewPlan` and `HumanReviewValidation` are real interrupts with persisted `ApprovalRecord`s |
+| CI | Lint (black/isort/flake8/mypy) + unit tests on push/PR (`.github/workflows/ci.yml`) |
+| Prometheus metrics definitions | `observability/metrics.py` — validation, retry, and throughput metrics emitted |
+
+### 🔮 Future Extension (designed, not yet built)
+
+These are explicitly scoped in this document and in `plan.md`, but currently exist only as empty interfaces, `.gitkeep` placeholders, or no-op stub nodes that just advance `current_phase`:
+
+| Area | Current state | What's missing |
+|---|---|---|
+| **CDC streaming** (Data Agent) | Bulk/batch load only | Streaming change-data-capture after initial bulk load |
+| **Code Agent** (`openrewrite_adapter`, `aider_adapter`) | Empty `__init__.py` stubs; `CodeRefactor` graph node is a no-op passthrough | ORM/JDBC dialect swap (OpenRewrite) + LLM-guided raw-SQL/SQLAlchemy edits (Aider) |
+| **Test phase** (automated test-case generation) | Stub node always returns `PASS` | Generated/executed schema-compat, referential-integrity, performance smoke tests |
+| **Deployment Agent** (`kubectl_adapter`, `terraform_adapter`) | Empty `__init__.py` stubs; `Cutover`/`Verify` nodes are stubs (`Verify` hardcodes `HEALTHY`) | Real rolling update, health-check gating, automatic `kubectl rollout undo` |
+| **Infra as code** (`infra/terraform`, `infra/k8s`, `infra/github-actions`) | `.gitkeep` placeholders only | Terraform modules (`network`, `eks`, `rds-instance`, `metadata-db`, `iam`); Helm charts; full deploy pipeline |
+| **LangSmith tracing** | `observability/langsmith/` empty | Per-call tracing (prompt/tokens/latency/cost) for every Bedrock call |
+| **Grafana dashboards** | `observability/grafana-dashboards/` empty; metrics already emitted to Prometheus | Dashboard JSON for agent latency/cost, tool success rate, pod health |
+| **Full CI/CD pipeline** | Lint + unit test only | Build images, vuln scan, push ECR, staging deploy, E2E test, manual gate, Terraform/Helm prod deploy |
+| **Secrets management** (Secrets Manager/IRSA) | Local dev uses `.env` | Runtime secret injection via AWS Secrets Manager / IRSA, no plaintext credentials |
+| **Multi-tenant isolation**, **DR plan for metadata DB** | Not started | See [§16 Open Questions](#16-open-questions--future-work) |
+
+No stubbed area was judged not worth keeping — all map directly to a Capstone-required capability ([Capstone_Proposal.md](./Capstone_Proposal.md)), so each is retained here as a scoped future extension rather than removed.

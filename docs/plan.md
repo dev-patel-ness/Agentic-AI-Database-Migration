@@ -4,6 +4,8 @@
 > Scope: full any-to-any Oracle/MySQL/PostgreSQL support, full production stack (Terraform/EKS/Bedrock/LangSmith/Prometheus/Grafana).
 > Team: 2-4 engineers. Duration: 10 weeks (fits within an 8-12 week window; compress by dropping stretch items if needed).
 > Each phase ends with a demo-able increment and a defined Definition of Done (DoD).
+>
+> **Status legend** (updated 2026-10-01, see [architecture.md §17](./architecture.md#17-implementation-status) for detail): ✅ Done · 🟨 Partially done · 🔮 Future extension (designed, not yet built).
 
 ---
 
@@ -20,7 +22,7 @@ On a 2-person team, merge roles: (Platform+AI) and (Data+DevOps).
 
 ---
 
-## Phase 0 — Foundations & Environment Setup (Week 1)
+## Phase 0 — Foundations & Environment Setup (Week 1) ✅ Done
 
 **Goal:** Repo skeleton, tooling, and cloud prerequisites in place so every later phase can build without blocking on infra.
 
@@ -35,7 +37,7 @@ On a 2-person team, merge roles: (Platform+AI) and (Data+DevOps).
 
 ---
 
-## Phase 1 — Orchestration Skeleton & Shared State (Week 2)
+## Phase 1 — Orchestration Skeleton & Shared State (Week 2) ✅ Done
 
 **Goal:** The LangGraph backbone and API/UI shells exist end-to-end with a no-op workflow, proving the plumbing before any real agent logic is added.
 
@@ -50,7 +52,7 @@ On a 2-person team, merge roles: (Platform+AI) and (Data+DevOps).
 
 ---
 
-## Phase 2 — Dialect Plugins & Discovery (Weeks 3-4)
+## Phase 2 — Dialect Plugins & Discovery (Weeks 3-4) ✅ Done
 
 **Goal:** Real discovery against real databases — the first agent that does actual work.
 
@@ -64,7 +66,7 @@ On a 2-person team, merge roles: (Platform+AI) and (Data+DevOps).
 
 ---
 
-## Phase 3 — Knowledge Base & Planner Agent (Week 4-5)
+## Phase 3 — Knowledge Base & Planner Agent (Week 4-5) ✅ Done
 
 **Goal:** RAG-backed migration planning with the first real Human-in-the-Loop gate.
 
@@ -78,7 +80,7 @@ On a 2-person team, merge roles: (Platform+AI) and (Data+DevOps).
 
 ---
 
-## Phase 4 — Schema & Logic Translation (Weeks 5-6)
+## Phase 4 — Schema & Logic Translation (Weeks 5-6) ✅ Done
 
 **Goal:** Automated DDL/procedure/trigger translation between dialects.
 
@@ -92,7 +94,7 @@ On a 2-person team, merge roles: (Platform+AI) and (Data+DevOps).
 
 ---
 
-## Phase 5 — Data Migration (Weeks 6-7)
+## Phase 5 — Data Migration (Weeks 6-7) 🟨 Partially done — bulk load implemented; CDC streaming is a 🔮 future extension
 
 **Goal:** Bulk + CDC data movement with measurable throughput.
 
@@ -105,7 +107,7 @@ On a 2-person team, merge roles: (Platform+AI) and (Data+DevOps).
 
 ---
 
-## Phase 6 — Application Code Refactoring (Week 7)
+## Phase 6 — Application Code Refactoring (Week 7) 🔮 Future extension — `agents/code_agent`, `openrewrite_adapter`, `aider_adapter` are empty stubs; `CodeRefactor` graph node is a no-op
 
 **Goal:** Automated application-layer adaptation to the new database dialect.
 
@@ -118,7 +120,7 @@ On a 2-person team, merge roles: (Platform+AI) and (Data+DevOps).
 
 ---
 
-## Phase 7 — Validation, Reconciliation & Testing (Week 8)
+## Phase 7 — Validation, Reconciliation & Testing (Week 8) 🟨 Partially done — checksum/reconciliation validation is real; the automated **Test** phase is a stub that always returns PASS
 
 **Goal:** Deterministic proof of migration correctness plus automated test generation.
 
@@ -131,7 +133,7 @@ On a 2-person team, merge roles: (Platform+AI) and (Data+DevOps).
 
 ---
 
-## Phase 8 — Deployment, Cutover & Rollback (Week 9)
+## Phase 8 — Deployment, Cutover & Rollback (Week 9) 🔮 Future extension — `agents/deployment_agent`, `kubectl_adapter`, `terraform_adapter`, and all of `infra/` are empty stubs/placeholders; `Cutover`/`Verify`/`Rollback` graph nodes exist but don't call real tooling
 
 **Goal:** Safe, automated cutover with proven rollback.
 
@@ -145,7 +147,7 @@ On a 2-person team, merge roles: (Platform+AI) and (Data+DevOps).
 
 ---
 
-## Phase 9 — Observability, Security & CI/CD Hardening (Week 9-10)
+## Phase 9 — Observability, Security & CI/CD Hardening (Week 9-10) 🟨 Partially done — Prometheus metrics + lint/unit-test CI are real; LangSmith tracing, Grafana dashboards, full build/scan/deploy pipeline, and Secrets Manager/IRSA are 🔮 future extensions
 
 **Goal:** Production-readiness — full tracing, metrics, dashboards, secrets, and a real pipeline.
 
@@ -159,7 +161,7 @@ On a 2-person team, merge roles: (Platform+AI) and (Data+DevOps).
 
 ---
 
-## Phase 10 — Final Integration, Docs & Demo (Week 10)
+## Phase 10 — Final Integration, Docs & Demo (Week 10) 🔮 Future extension — depends on Phases 6/8/9 completing first
 
 **Goal:** Everything works together as one coherent product, documented and demoable.
 

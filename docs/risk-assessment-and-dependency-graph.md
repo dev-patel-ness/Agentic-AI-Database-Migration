@@ -191,10 +191,11 @@ For your sample schema:
 }
 ```
 
-**Note**: This is **not** used for risk assessment directly (risk is per-object). The graph is exposed in the `DiscoveryResult` struct but the planner's risk ranking doesn't currently traverse it. It's available for **future features** like:
-- Topological sort to determine migration order
-- Impact analysis ("if this table fails, which others are blocked?")
-- Circular dependency detection
+**Note**: This is **not** used for risk assessment directly (risk is per-object). The graph is exposed in the `DiscoveryResult` struct and is already consumed by:
+- `agents/data_agent/_topological_sort_tables()` \u2014 orders bulk table loads so FK-referenced (parent) tables load before dependents
+- `agents/schema_agent/_topological_sort_by_dependencies()` \u2014 orders DDL application (views/FKs/etc.) by dependency
+
+\ud83d\udd2e **Future extension**: impact analysis ("if this table fails, which others are blocked?") and circular-dependency detection/reporting beyond the current fallback-to-catalog-order behavior.
 
 ---
 
