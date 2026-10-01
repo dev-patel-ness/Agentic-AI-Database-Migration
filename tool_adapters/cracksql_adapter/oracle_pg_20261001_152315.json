@@ -1,0 +1,11 @@
+{
+    "info": {
+        "src_dialect": "oracle",
+        "tgt_dialect": "pg",
+        "src_sql": "\nCREATE OR REPLACE FUNCTION sample_user.get_emp_salary(emp_id NUMBER) RETURN NUMBER IS\n    v_salary NUMBER;\nBEGIN\n    SELECT salary INTO v_salary FROM sample_user.employees WHERE employee_id = emp_id;\n    RETURN v_salary;\nEND get_emp_salary;\n",
+        "model_name": null,
+        "vector_config": null,
+        "tgt_db_config": null
+    },
+    "process_data": []
+}

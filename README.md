@@ -204,6 +204,22 @@ poetry run isort .
 
 #### FastAPI Server
 
+**Option 1: With automatic destination database cleanup (recommended)**
+
+Before each job, the destination database is automatically truncated to ensure a clean migration:
+
+```powershell
+# PowerShell on Windows
+.\scripts\Start-API-Clean.ps1
+```
+
+```bash
+# Bash/Linux/macOS
+poetry run python scripts/start_api_clean.py
+```
+
+**Option 2: Manual startup without cleanup**
+
 ```bash
 cd apps/api-fastapi
 poetry run uvicorn main:app --reload --host 0.0.0.0 --port 8000
