@@ -1,0 +1,11 @@
+{
+    "info": {
+        "src_dialect": "oracle",
+        "tgt_dialect": "pg",
+        "src_sql": "\n  CREATE OR REPLACE FORCE EDITIONABLE VIEW \"SAMPLE_USER\".\"ACTIVE_EMPLOYEES\" (\"EMPLOYEE_ID\", \"FIRST_NAME\", \"LAST_NAME\", \"DEPARTMENT_ID\") AS \n  SELECT employee_id, first_name, last_name, department_id\nFROM employees\nWHERE is_active = 'Y'",
+        "model_name": null,
+        "vector_config": null,
+        "tgt_db_config": null
+    },
+    "process_data": []
+}

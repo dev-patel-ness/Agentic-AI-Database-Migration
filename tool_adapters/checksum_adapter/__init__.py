@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import time
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from dialects import get_dialect
@@ -35,6 +36,23 @@ def _quoted_table_path(dialect: str, namespace: str, table_name: str) -> str:
     if namespace:
         return f"{quote(namespace)}.{quote(table_name)}"
     return quote(table_name)
+
+
+def _normalize_value(value: Any) -> str:
+    """Canonicalize a cell value so equal numbers hash the same regardless of
+    driver representation -- e.g. Oracle NUMBER -> Postgres NUMERIC often
+    comes back as plain `int(1)` on one side and `Decimal('1.000000000000000000')`
+    on the other (SeaTunnel's auto-created schema has no scale info), which
+    would otherwise never str()-match even though the values are identical.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, (int, float, Decimal)):
+        try:
+            return format(Decimal(str(value)).normalize(), "f")
+        except InvalidOperation:
+            return str(value)
+    return str(value)
 
 
 class ChecksumAdapter(BaseToolAdapter):
@@ -159,7 +177,7 @@ class ChecksumAdapter(BaseToolAdapter):
                 rows = cursor.fetchall()
                 cursor.close()
 
-                row_strings = sorted("|".join(str(v) for v in row) for row in rows)
+                row_strings = sorted("|".join(_normalize_value(v) for v in row) for row in rows)
                 hasher = hashlib.md5()
                 for row_str in row_strings:
                     hasher.update(row_str.encode("utf-8"))
