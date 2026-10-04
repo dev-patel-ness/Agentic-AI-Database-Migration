@@ -794,7 +794,7 @@ def _verify(state: MigrationState) -> dict[str, Any]:
                 try:
                     _source_connection, target_connection = connections
                     # Simple connectivity test
-                    conn = connect(target_connection)
+                    conn = connect(state.dialects.target, target_connection)
                     if conn is None:
                         db_healthy = False
                     else:
@@ -858,10 +858,9 @@ def _route_after_verify(state: MigrationState) -> str:
     """Route after verification: if healthy, proceed to Done, else Rollback."""
     if not state.deployment:
         return "Rollback"
-    
+
     status = state.deployment.status.upper()
-    # Accept HEALTHY or DEGRADED (warning but functional), reject UNHEALTHY or FAILED
-    return "Done" if status in ("HEALTHY", "DEGRADED") else "Rollback"
+    return "Done" if status == "HEALTHY" else "Rollback"
 
 
 def _done(state: MigrationState) -> dict[str, Any]:

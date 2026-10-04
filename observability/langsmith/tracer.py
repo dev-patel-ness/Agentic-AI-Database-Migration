@@ -226,7 +226,7 @@ class LangSmithTracer:
         capture_llm_tokens: bool = False,
     ) -> Any:
         """Execute ``fn`` synchronously, creating a LangSmith run around it."""
-        if not self._enabled or self.client is None:
+        if self.client is None:
             return fn(*args, **kwargs)
 
         start = time.perf_counter()
@@ -271,7 +271,7 @@ class LangSmithTracer:
         capture_llm_tokens: bool = False,
     ) -> Any:
         """Execute ``fn`` asynchronously, creating a LangSmith run around it."""
-        if not self._enabled or self.client is None:
+        if self.client is None:
             return await fn(*args, **kwargs)
 
         start = time.perf_counter()

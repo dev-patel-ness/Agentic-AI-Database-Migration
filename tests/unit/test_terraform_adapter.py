@@ -1,6 +1,7 @@
 """Unit tests for TerraformAdapter"""
 
 import json
+import sys
 import pytest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -156,6 +157,10 @@ class TestTerraformAdapter:
             assert not result.success
             assert "invalid" in result.error.lower()
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="NTFS doesn't support POSIX owner/group/other permission bits via os.chmod",
+    )
     def test_write_tfvars_security(self, terraform_adapter):
         """Test that tfvars file is created with secure permissions."""
         variables = {"db_password": "secret123", "environment": "staging"}

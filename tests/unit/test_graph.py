@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import uuid
+from unittest.mock import MagicMock, patch
 
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
@@ -86,6 +88,20 @@ def test_graph_pauses_at_human_review_plan():
     assert snapshot.interrupts[0].value["type"] == "HumanReviewPlan"
 
 
+def _mock_subprocess_run(cmd, **kwargs):
+    """Fake successful terraform/kubectl CLI responses, keyed by command."""
+    if cmd[0] == "terraform":
+        return MagicMock(returncode=0, stdout="Terraform v1.5.0", stderr="")
+    if cmd[:3] == ["kubectl", "get", "deployment"]:
+        deployment_json = {
+            "metadata": {"name": "capstone-app", "generation": "1"},
+            "spec": {"replicas": 2, "template": {"spec": {"containers": [{"image": "capstone/app:latest"}]}}},
+            "status": {"readyReplicas": 2, "availableReplicas": 2, "updatedReplicas": 2, "conditions": []},
+        }
+        return MagicMock(returncode=0, stdout=json.dumps(deployment_json), stderr="")
+    return MagicMock(returncode=0, stdout="Client Version: v1.28.0", stderr="")
+
+
 def test_graph_happy_path_reaches_done():
     graph = compile_graph(checkpointer=InMemorySaver())
     job_id = str(uuid.uuid4())
@@ -94,9 +110,13 @@ def test_graph_happy_path_reaches_done():
     )
     config = _job_config(job_id)
 
-    graph.invoke(initial.model_dump(), config=config)
-    for _ in range(3):  # HumanReviewPlan -> HumanReviewValidation -> HumanReviewCutover
-        graph.invoke(Command(resume={"decision": "approve", "reviewer": "test-bot"}), config=config)
+    with patch("tool_adapters.terraform_adapter.terraform.subprocess.run", side_effect=_mock_subprocess_run), \
+         patch("tool_adapters.kubectl_adapter.kubectl.subprocess.run", side_effect=_mock_subprocess_run):
+        graph.invoke(initial.model_dump(), config=config)
+        for _ in range(3):  # HumanReviewPlan -> HumanReviewValidation -> HumanReviewCutover
+            graph.invoke(
+                Command(resume={"decision": "approve", "reviewer": "test-bot"}), config=config
+            )
 
     snapshot = graph.get_state(config)
     assert snapshot.values["current_phase"] == "Done"

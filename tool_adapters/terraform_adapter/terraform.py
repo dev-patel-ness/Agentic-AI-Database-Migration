@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from tool_adapters.base import BaseToolAdapter, ToolResult, ExecutionContext
+from tool_adapters.base import ToolResult, ExecutionContext
 
 logger = logging.getLogger(__name__)
 
@@ -34,11 +34,14 @@ class TerraformApply:
     raw_output: str
 
 
-class TerraformAdapter(BaseToolAdapter):
+class TerraformAdapter:
     """
     Adapter for executing Terraform commands.
     Supports init, plan, apply, destroy, and output retrieval.
-    
+
+    Note: exposes a Terraform-specific method surface (init/plan/apply/destroy/
+    output/validate/execute), not the generic BaseToolAdapter contract.
+
     SECURITY NOTES:
     - All variable values are securely passed via tfvars files (not CLI args)
     - Terraform backend state must be configured with encryption

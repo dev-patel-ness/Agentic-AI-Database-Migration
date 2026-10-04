@@ -8,7 +8,7 @@ import subprocess
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from tool_adapters.base import BaseToolAdapter, ToolResult, ExecutionContext
+from tool_adapters.base import ToolResult, ExecutionContext
 
 logger = logging.getLogger(__name__)
 
@@ -41,11 +41,14 @@ class RolloutStatus:
     timestamp: str
 
 
-class KubectlAdapter(BaseToolAdapter):
+class KubectlAdapter:
     """
     Adapter for executing kubectl commands on EKS.
     Supports deployment rolling updates, health checks, rollbacks, and monitoring.
-    
+
+    Note: exposes a kubectl-specific method surface (get_deployment/set_image/
+    rollout_status/...), not the generic BaseToolAdapter contract.
+
     SECURITY NOTES:
     - Kubeconfig is sourced from environment or standard ~/.kube/config
     - RBAC is enforced via service account (least privilege scoping to ns-app)

@@ -17,7 +17,7 @@ Usage
     from observability.secrets_manager import get_secrets_manager
 
     sm = get_secrets_manager()
-    creds = await sm.get_db_credentials("capstone-prod/postgres-metadata")
+    creds = await sm.get_db_credentials("capstone-prod", "postgresql")
     # -> {"username": "...", "password": "...", "host": "...", ...}
 """
 
@@ -137,7 +137,7 @@ class SecretsManagerClient:
 
         # Fallback: try to find a matching env var.
         if self.use_env_fallback:
-            env_value = self._env_fallback(secret_id)
+            env_value = self._get_secret_from_env(secret_id)
             if env_value is not None:
                 logger.debug("Using env fallback for secret %s", secret_id)
                 return env_value
@@ -147,7 +147,7 @@ class SecretsManagerClient:
             "Secrets Manager unavailable and no env fallback found."
         )
 
-    async def get_db_credentials(self, secret_id: str) -> dict[str, Any]:
+    async def get_db_credentials(self, prefix: str, dialect: str) -> dict[str, Any]:
         """Retrieve database credentials dict from Secrets Manager.
 
         Expected secret shape::
@@ -161,14 +161,43 @@ class SecretsManagerClient:
             }
 
         Args:
-            secret_id: Secrets Manager secret ID for the DB credentials.
+            prefix: Secret ID prefix/environment, e.g. "capstone-staging".
+            dialect: DB dialect name, e.g. "postgresql", "mysql", "oracle".
 
         Returns:
             Dict with username, password, host, port, database keys.
         """
-        secret = await self.get_secret(secret_id)
+        secret = await self.get_secret(f"{prefix}/{dialect}-credentials")
         if not isinstance(secret, dict):
-            raise ValueError(f"Secret '{secret_id}' is not a JSON object — cannot use as DB credentials")
+            raise ValueError(f"Secret for '{prefix}/{dialect}' is not a JSON object — cannot use as DB credentials")
+        return secret
+
+    async def get_bedrock_credentials(self, prefix: str) -> dict[str, Any]:
+        """Retrieve Bedrock config/credentials dict from Secrets Manager.
+
+        Args:
+            prefix: Secret ID prefix/environment, e.g. "capstone-staging".
+
+        Returns:
+            Dict with Bedrock access config (keys/region as stored in the secret).
+        """
+        secret = await self.get_secret(f"{prefix}/bedrock-config")
+        if not isinstance(secret, dict):
+            raise ValueError(f"Secret for '{prefix}/bedrock-config' is not a JSON object")
+        return secret
+
+    async def get_langsmith_credentials(self, prefix: str) -> dict[str, Any]:
+        """Retrieve LangSmith credentials dict from Secrets Manager.
+
+        Args:
+            prefix: Secret ID prefix/environment, e.g. "capstone-staging".
+
+        Returns:
+            Dict with api_key/project_name as stored in the secret.
+        """
+        secret = await self.get_secret(f"{prefix}/langsmith-credentials")
+        if not isinstance(secret, dict):
+            raise ValueError(f"Secret for '{prefix}/langsmith-credentials' is not a JSON object")
         return secret
 
     async def get_aws_credentials(self, secret_id: str) -> dict[str, Any]:
@@ -254,12 +283,14 @@ class SecretsManagerClient:
             return raw
 
     @staticmethod
-    def _env_fallback(secret_id: str) -> Any | None:
+    def _get_secret_from_env(secret_id: str) -> Any | None:
         """Try to find a matching environment variable for the given secret ID.
 
         Converts the secret ID to an env-var name by uppercasing and replacing
         non-alphanumeric characters with underscores.
         E.g. ``capstone-staging/db-credentials`` → ``CAPSTONE_STAGING_DB_CREDENTIALS``.
+        Non-JSON raw values are wrapped as ``{"raw_value": <raw string>}`` so
+        callers always get a dict back, consistent with parsed JSON secrets.
         """
         env_key = re.sub(r"[^A-Z0-9]", "_", secret_id.upper())
         raw = os.getenv(env_key)
@@ -268,4 +299,4 @@ class SecretsManagerClient:
         try:
             return json.loads(raw)
         except (json.JSONDecodeError, TypeError):
-            return raw
+            return {"raw_value": raw}

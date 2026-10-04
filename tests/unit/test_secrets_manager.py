@@ -168,7 +168,8 @@ class TestSecretsManagerClient:
 
         assert sm1 is sm2
 
-    def test_secrets_manager_no_fallback_raises(self, secrets_manager):
+    @pytest.mark.asyncio
+    async def test_secrets_manager_no_fallback_raises(self, secrets_manager):
         """Test that exception is raised when fallback is disabled."""
         secrets_manager.use_env_fallback = False
 
@@ -176,4 +177,4 @@ class TestSecretsManagerClient:
             mock_get.side_effect = Exception("Secret not found")
 
             with pytest.raises(Exception):
-                secrets_manager._get_secret_from_env("test/secret")
+                await secrets_manager.get_secret("test/secret")

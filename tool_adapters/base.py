@@ -65,6 +65,7 @@ class ToolResult:
 
     success: bool
     output: dict[str, Any] = field(default_factory=dict)
+    data: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
     execution_time_seconds: float = 0.0
     confidence_score: Optional[float] = None
