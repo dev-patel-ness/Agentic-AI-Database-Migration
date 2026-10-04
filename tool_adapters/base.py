@@ -36,6 +36,20 @@ class ExecutionState(str, Enum):
 
 
 @dataclass
+class ExecutionContext:
+    """Optional execution context passed to adapter methods for tracing/auditing.
+
+    Carries job-level metadata (job_id, phase, caller) so adapters can include
+    it in log messages and observability traces without coupling to MigrationState.
+    """
+
+    job_id: str = ""
+    phase: str = ""
+    caller: str = ""
+    extra: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class AdapterConfig:
     """Normalized, validated configuration handed to `run()`."""
 

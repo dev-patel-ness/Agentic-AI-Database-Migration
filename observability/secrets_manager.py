@@ -1,211 +1,271 @@
-"""
-AWS Secrets Manager integration for runtime secret retrieval.
+"""AWS Secrets Manager async client for the migration platform (architecture.md §14).
 
-Provides async access to DB credentials, API keys, and other sensitive config
-stored in AWS Secrets Manager. Falls back to environment variables for local dev.
+Provides runtime secret injection for DB credentials, Bedrock API keys, and
+other sensitive config — replacing plaintext `.env` values in deployed containers.
+
+Features
+--------
+- Async ``get_secret()`` with in-process TTL cache (avoids repeated API calls).
+- Graceful fallback to environment variables when Secrets Manager is unreachable
+  (supports local dev without AWS access).
+- Typed helpers ``get_db_credentials()`` and ``get_aws_credentials()`` for the
+  most common use-cases in the platform.
+- Singleton factory ``get_secrets_manager()`` so all agents share one client.
+
+Usage
+-----
+    from observability.secrets_manager import get_secrets_manager
+
+    sm = get_secrets_manager()
+    creds = await sm.get_db_credentials("capstone-prod/postgres-metadata")
+    # -> {"username": "...", "password": "...", "host": "...", ...}
 """
+
+from __future__ import annotations
 
 import json
 import logging
 import os
-from typing import Optional, Any, Dict
-
-import boto3
-from botocore.exceptions import BotoCoreError, ClientError
+import re
+import time
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
+# Graceful degradation: boto3 is optional for local dev without AWS.
+try:
+    import boto3
+    from botocore.exceptions import ClientError
 
-class SecretsManagerClient:
-    """Async wrapper around AWS Secrets Manager for credential retrieval."""
+    BOTO3_AVAILABLE = True
+except ImportError:
+    BOTO3_AVAILABLE = False
+    ClientError = Exception  # type: ignore[assignment,misc]
 
-    def __init__(self, region_name: str = "us-east-1", use_env_fallback: bool = True):
-        """
-        Initialize Secrets Manager client.
-
-        Args:
-            region_name: AWS region (default: us-east-1)
-            use_env_fallback: Fall back to environment variables if secret not found (default: True)
-        """
-        self.region_name = region_name
-        self.use_env_fallback = use_env_fallback
-        self._client = None
-        self._cache: Dict[str, Any] = {}
-
-    @property
-    def client(self):
-        """Lazy-initialize boto3 Secrets Manager client."""
-        if self._client is None:
-            self._client = boto3.client("secretsmanager", region_name=self.region_name)
-        return self._client
-
-    async def get_secret(self, secret_name: str, use_cache: bool = True) -> Optional[Dict[str, Any]]:
-        """
-        Retrieve a secret from Secrets Manager.
-
-        Args:
-            secret_name: Name of the secret (e.g., "capstone-staging/db-credentials")
-            use_cache: Cache the result to avoid repeated calls (default: True)
-
-        Returns:
-            Dictionary with secret value, or None if not found and fallback disabled.
-
-        Raises:
-            ClientError: If Secrets Manager call fails (unless fallback is enabled).
-        """
-        # Check cache
-        if use_cache and secret_name in self._cache:
-            logger.debug(f"Returning cached secret: {secret_name}")
-            return self._cache[secret_name]
-
-        try:
-            logger.debug(f"Fetching secret from Secrets Manager: {secret_name}")
-            response = self.client.get_secret_value(SecretId=secret_name)
-
-            # Parse JSON if needed
-            if "SecretString" in response:
-                secret_value = json.loads(response["SecretString"])
-            else:
-                secret_value = response["SecretBinary"]
-
-            # Cache result
-            if use_cache:
-                self._cache[secret_name] = secret_value
-
-            return secret_value
-
-        except (ClientError, BotoCoreError) as e:
-            logger.warning(f"Failed to retrieve secret {secret_name}: {e}")
-
-            if self.use_env_fallback:
-                logger.info(f"Falling back to environment variables for {secret_name}")
-                return self._get_secret_from_env(secret_name)
-            else:
-                raise
-
-    async def get_db_credentials(
-        self, cluster_name: str, dialect: str
-    ) -> Dict[str, Any]:
-        """
-        Retrieve database credentials for a specific cluster and dialect.
-
-        Expected secret structure in Secrets Manager:
-        {
-            "username": "...",
-            "password": "...",
-            "host": "...",
-            "port": ...,
-            "database": "..."
-        }
-
-        Args:
-            cluster_name: Cluster name (e.g., "capstone-staging")
-            dialect: Database dialect (e.g., "postgresql", "mysql", "oracle")
-
-        Returns:
-            Dictionary with DB connection details.
-        """
-        secret_name = f"{cluster_name}/{dialect}-credentials"
-        return await self.get_secret(secret_name) or {}
-
-    async def get_bedrock_credentials(self, cluster_name: str) -> Dict[str, str]:
-        """
-        Retrieve AWS Bedrock credentials/config.
-
-        Expected secret structure:
-        {
-            "aws_access_key_id": "...",
-            "aws_secret_access_key": "...",
-            "region": "..."
-        }
-
-        Args:
-            cluster_name: Cluster name (e.g., "capstone-staging")
-
-        Returns:
-            Dictionary with Bedrock auth config.
-        """
-        secret_name = f"{cluster_name}/bedrock-config"
-        return await self.get_secret(secret_name) or {}
-
-    async def get_langsmith_credentials(self, cluster_name: str) -> Dict[str, str]:
-        """
-        Retrieve LangSmith API credentials.
-
-        Expected secret structure:
-        {
-            "api_key": "...",
-            "project_name": "..."
-        }
-
-        Args:
-            cluster_name: Cluster name
-
-        Returns:
-            Dictionary with LangSmith config.
-        """
-        secret_name = f"{cluster_name}/langsmith-credentials"
-        return await self.get_secret(secret_name) or {}
-
-    def _get_secret_from_env(self, secret_name: str) -> Optional[Dict[str, Any]]:
-        """
-        Fallback to environment variables for local dev.
-
-        Converts secret name to uppercase with underscores, e.g.:
-        - "capstone-staging/db-credentials" → "CAPSTONE_STAGING_DB_CREDENTIALS"
-        - "capstone-staging/bedrock-config" → "CAPSTONE_STAGING_BEDROCK_CONFIG"
-
-        Args:
-            secret_name: Secret name in Secrets Manager
-
-        Returns:
-            Parsed JSON from environment variable, or None if not set.
-        """
-        env_var_name = secret_name.upper().replace("-", "_").replace("/", "_")
-        env_value = os.getenv(env_var_name)
-
-        if env_value:
-            try:
-                return json.loads(env_value)
-            except json.JSONDecodeError:
-                logger.warning(f"Failed to parse environment variable {env_var_name} as JSON")
-                return {"raw_value": env_value}
-
-        return None
-
-    def invalidate_cache(self, secret_name: Optional[str] = None):
-        """
-        Invalidate cache for a specific secret or all secrets.
-
-        Args:
-            secret_name: If provided, only invalidate this secret. If None, clear all.
-        """
-        if secret_name:
-            self._cache.pop(secret_name, None)
-            logger.debug(f"Invalidated cache for secret: {secret_name}")
-        else:
-            self._cache.clear()
-            logger.debug("Cleared entire secrets cache")
-
-
-# Singleton instance for app-wide use
-_secrets_manager: Optional[SecretsManagerClient] = None
+# Module-level singleton.
+_secrets_manager_instance: Optional["SecretsManagerClient"] = None
 
 
 def get_secrets_manager(
-    region_name: str = "us-east-1", use_env_fallback: bool = True
-) -> SecretsManagerClient:
-    """
-    Get or create the singleton SecretsManagerClient.
+    region_name: str | None = None,
+    use_env_fallback: bool = True,
+) -> "SecretsManagerClient":
+    """Return the module-level singleton SecretsManagerClient."""
+    global _secrets_manager_instance
+    if _secrets_manager_instance is None:
+        _secrets_manager_instance = SecretsManagerClient(
+            region_name=region_name or os.getenv("AWS_REGION", "us-east-1"),
+            use_env_fallback=use_env_fallback,
+        )
+    return _secrets_manager_instance
 
-    Args:
-        region_name: AWS region
-        use_env_fallback: Fall back to env vars
 
-    Returns:
-        SecretsManagerClient singleton.
+class SecretsManagerClient:
+    """Async-friendly AWS Secrets Manager client with caching and env fallback.
+
+    The client is *synchronous* internally (boto3 is sync) but exposes an
+    ``async`` interface so it integrates cleanly with FastAPI and asyncio-based
+    agent code.  The cache is an in-process dict with per-entry TTL.
     """
-    global _secrets_manager
-    if _secrets_manager is None:
-        _secrets_manager = SecretsManagerClient(region_name, use_env_fallback)
-    return _secrets_manager
+
+    # Default cache TTL: 5 minutes (secrets rarely change mid-run).
+    _DEFAULT_CACHE_TTL_SECONDS = 300
+
+    def __init__(
+        self,
+        region_name: str = "us-east-1",
+        use_env_fallback: bool = True,
+        cache_ttl_seconds: int = _DEFAULT_CACHE_TTL_SECONDS,
+    ) -> None:
+        self.region_name = region_name
+        self.use_env_fallback = use_env_fallback
+        self.cache_ttl_seconds = cache_ttl_seconds
+
+        # Cache: secret_id -> (value, expiry_timestamp)
+        self._cache: dict[str, tuple[Any, float]] = {}
+
+        self.client: Any = None
+        if BOTO3_AVAILABLE:
+            try:
+                self.client = boto3.client("secretsmanager", region_name=region_name)
+                logger.debug("SecretsManagerClient initialised (region=%s)", region_name)
+            except Exception as exc:
+                logger.warning("SecretsManagerClient init failed (%s) — env fallback only", exc)
+
+    # ------------------------------------------------------------------
+    # Public async API
+    # ------------------------------------------------------------------
+
+    async def get_secret(
+        self,
+        secret_id: str,
+        use_cache: bool = True,
+    ) -> dict[str, Any] | str:
+        """Retrieve and parse a secret by ID.
+
+        Returns the secret as a dict (if JSON) or raw string.
+        Falls back to environment variables on any error when
+        ``use_env_fallback=True``.
+
+        Args:
+            secret_id: The Secrets Manager secret ID or ARN.
+            use_cache:  Whether to return a cached value if available.
+
+        Returns:
+            Parsed secret dict or raw string value.
+
+        Raises:
+            RuntimeError: If the secret cannot be retrieved and no fallback exists.
+        """
+        # Check cache first.
+        if use_cache:
+            cached = self._get_cached(secret_id)
+            if cached is not None:
+                return cached
+
+        # Try Secrets Manager.
+        if self.client is not None:
+            try:
+                response = self.client.get_secret_value(SecretId=secret_id)
+                raw = response.get("SecretString") or response.get("SecretBinary", b"").decode()
+                value = self._parse_secret(raw)
+                if use_cache:
+                    self._set_cache(secret_id, value)
+                return value
+            except Exception as exc:
+                logger.warning("Secrets Manager get_secret(%s) failed: %s", secret_id, exc)
+
+        # Fallback: try to find a matching env var.
+        if self.use_env_fallback:
+            env_value = self._env_fallback(secret_id)
+            if env_value is not None:
+                logger.debug("Using env fallback for secret %s", secret_id)
+                return env_value
+
+        raise RuntimeError(
+            f"Cannot retrieve secret '{secret_id}': "
+            "Secrets Manager unavailable and no env fallback found."
+        )
+
+    async def get_db_credentials(self, secret_id: str) -> dict[str, Any]:
+        """Retrieve database credentials dict from Secrets Manager.
+
+        Expected secret shape::
+
+            {
+                "username": "...",
+                "password": "...",
+                "host": "...",
+                "port": 5432,
+                "database": "..."
+            }
+
+        Args:
+            secret_id: Secrets Manager secret ID for the DB credentials.
+
+        Returns:
+            Dict with username, password, host, port, database keys.
+        """
+        secret = await self.get_secret(secret_id)
+        if not isinstance(secret, dict):
+            raise ValueError(f"Secret '{secret_id}' is not a JSON object — cannot use as DB credentials")
+        return secret
+
+    async def get_aws_credentials(self, secret_id: str) -> dict[str, Any]:
+        """Retrieve AWS credentials dict from Secrets Manager.
+
+        Expected secret shape::
+
+            {
+                "aws_access_key_id": "...",
+                "aws_secret_access_key": "...",
+                "aws_region": "us-east-1"
+            }
+
+        Args:
+            secret_id: Secrets Manager secret ID for the AWS credentials.
+
+        Returns:
+            Dict with aws_access_key_id, aws_secret_access_key, aws_region keys.
+        """
+        secret = await self.get_secret(secret_id)
+        if not isinstance(secret, dict):
+            raise ValueError(f"Secret '{secret_id}' is not a JSON object — cannot use as AWS credentials")
+        return secret
+
+    async def get_secret_value(self, secret_id: str, key: str) -> str:
+        """Retrieve a single string value from a JSON secret.
+
+        Args:
+            secret_id: Secrets Manager secret ID.
+            key: Key within the JSON secret to return.
+
+        Returns:
+            String value for the given key.
+
+        Raises:
+            KeyError: If the key is not present in the secret.
+        """
+        secret = await self.get_secret(secret_id)
+        if not isinstance(secret, dict):
+            raise ValueError(f"Secret '{secret_id}' is not a JSON object")
+        if key not in secret:
+            raise KeyError(f"Key '{key}' not found in secret '{secret_id}'")
+        return str(secret[key])
+
+    def invalidate_cache(self, secret_id: str | None = None) -> None:
+        """Invalidate a specific secret or the entire cache.
+
+        Args:
+            secret_id: If provided, invalidate only this secret; otherwise
+                       clear the entire cache.
+        """
+        if secret_id is None:
+            self._cache.clear()
+            logger.debug("Secrets cache cleared")
+        elif secret_id in self._cache:
+            del self._cache[secret_id]
+            logger.debug("Secrets cache invalidated for %s", secret_id)
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _get_cached(self, secret_id: str) -> Any | None:
+        """Return cached value if present and not expired."""
+        if secret_id in self._cache:
+            value, expiry = self._cache[secret_id]
+            if time.monotonic() < expiry:
+                return value
+            # Expired — remove from cache.
+            del self._cache[secret_id]
+        return None
+
+    def _set_cache(self, secret_id: str, value: Any) -> None:
+        """Store a value in the cache with a TTL."""
+        self._cache[secret_id] = (value, time.monotonic() + self.cache_ttl_seconds)
+
+    @staticmethod
+    def _parse_secret(raw: str) -> dict[str, Any] | str:
+        """Parse a raw secret string — returns dict if JSON, else raw string."""
+        try:
+            return json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return raw
+
+    @staticmethod
+    def _env_fallback(secret_id: str) -> Any | None:
+        """Try to find a matching environment variable for the given secret ID.
+
+        Converts the secret ID to an env-var name by uppercasing and replacing
+        non-alphanumeric characters with underscores.
+        E.g. ``capstone-staging/db-credentials`` → ``CAPSTONE_STAGING_DB_CREDENTIALS``.
+        """
+        env_key = re.sub(r"[^A-Z0-9]", "_", secret_id.upper())
+        raw = os.getenv(env_key)
+        if raw is None:
+            return None
+        try:
+            return json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return raw

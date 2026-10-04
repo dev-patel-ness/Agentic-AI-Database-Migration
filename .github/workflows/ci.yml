@@ -170,7 +170,7 @@ jobs:
       - name: Build and push API image
         uses: docker/build-push-action@v4
         with:
-          context: ./apps/api-fastapi
+          context: .
           file: ./apps/api-fastapi/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}-api
@@ -181,7 +181,7 @@ jobs:
       - name: Build and push UI image
         uses: docker/build-push-action@v4
         with:
-          context: ./apps/ui-streamlit
+          context: .
           file: ./apps/ui-streamlit/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}-ui

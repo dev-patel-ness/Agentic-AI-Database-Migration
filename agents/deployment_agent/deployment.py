@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from tool_adapters.terraform_adapter import TerraformAdapter
 from tool_adapters.kubectl_adapter import KubectlAdapter
-from dialects.connections import ConnectionConfig, connect
+from dialects.connections import connect
 
 logger = logging.getLogger(__name__)
 
@@ -109,7 +109,7 @@ class DeploymentAgent:
     async def deploy(
         self,
         new_image: str,
-        target_db_config: Optional[ConnectionConfig] = None,
+        target_db_config: Optional[Dict[str, Any]] = None,
         terraform_vars: Optional[Dict[str, Any]] = None
     ) -> DeploymentResult:
         """
@@ -342,35 +342,35 @@ class DeploymentAgent:
             self.logger.error(f"Error verifying pods: {e}")
             return False
 
-    async def _health_check(self, db_config: ConnectionConfig) -> bool:
+    async def _health_check(self, db_config: Dict[str, Any]) -> bool:
         """
         Check database connectivity (health check).
         
         Args:
-            db_config: Database connection configuration
+            db_config: Database connection configuration dict with keys:
+                       dialect, host, port, username, password, database
             
         Returns:
             True if database is accessible, False otherwise
         """
+        dialect = db_config.get("dialect", "unknown")
         try:
-            conn = await connect(db_config)
+            # connect() is synchronous — run in executor to avoid blocking event loop
+            loop = asyncio.get_event_loop()
+            conn = await loop.run_in_executor(None, lambda: connect(dialect, db_config))
             if conn is None:
                 self.logger.error("Database connection failed")
                 return False
             
-            # Simple connectivity test
-            # Actual query would depend on database type
+            # Simple connectivity test — just opening the connection is sufficient
+            # More sophisticated health checks (e.g. SELECT 1) can be added here
             try:
-                # For most databases, a simple connection test is enough
-                # More sophisticated health checks can be added here
-                self.logger.info(f"Database health check passed for {db_config.dialect}")
+                self.logger.info(f"Database health check passed for {dialect}")
                 return True
             finally:
-                # Close connection
+                # Close connection (DB-API connections use .close())
                 if hasattr(conn, 'close'):
                     conn.close()
-                elif hasattr(conn, 'disconnect'):
-                    await conn.disconnect()
         except Exception as e:
             self.logger.error(f"Health check error: {e}")
             return False

@@ -205,202 +205,134 @@ class LangSmithTracer:
                         extra_metadata={"model": model_name, **(metadata or {})},
                         capture_llm_tokens=True,
                     )
-
-                    return result
-
-                except Exception as e:
-                    duration = time.time() - start_time
-                    self.client.create_run(
-                        name=f"{tool_name}::{func.__name__}",
-                        run_type="tool",
-                        inputs={"kwargs": str(kwargs)[:100]},
-                        error=str(e),
-                        tags=trace_tags + ["error"],
-                        metadata={"tool": tool_name, "duration_seconds": duration, "error": str(e)},
-                    )
-                    raise
-
-            @functools.wraps(func)
-            def sync_wrapper(*args, **kwargs) -> T:
-                if not self.client:
-                    return func(*args, **kwargs)
-
-                trace_tags = self._build_tags(["tool", tool_name] + (tags or []), metadata or {})
-
-                try:
-                    start_time = time.time()
-                    result = func(*args, **kwargs)
-                    duration = time.time() - start_time
-
-                    success = getattr(result, "success", None)
-
-                    self.client.create_run(
-                        name=f"{tool_name}::{func.__name__}",
-                        run_type="tool",
-                        inputs={"kwargs": str(kwargs)[:100]},
-                        outputs={"success": success, "output": str(result)[:100]},
-                        tags=trace_tags + (["success"] if success else ["failure"] if success is False else []),
-                        metadata={"tool": tool_name, "duration_seconds": duration, "success": success, **(metadata or {})},
-                    )
-
-                    return result
-
-                except Exception as e:
-                    duration = time.time() - start_time
-                    self.client.create_run(
-                        name=f"{tool_name}::{func.__name__}",
-                        run_type="tool",
-                        inputs={"kwargs": str(kwargs)[:100]},
-                        error=str(e),
-                        tags=trace_tags + ["error"],
-                        metadata={"tool": tool_name, "duration_seconds": duration, "error": str(e)},
-                    )
-                    raise
-
-            if asyncio.iscoroutinefunction(func):
-                return async_wrapper
-            else:
                 return sync_wrapper
 
         return decorator
 
-    def trace_llm_call(
+    # ------------------------------------------------------------------
+    # Internal execution helpers
+    # ------------------------------------------------------------------
+
+    def _run_sync(
         self,
-        model_name: str,
-        tags: Optional[list[str]] = None,
-        metadata: Optional[dict[str, Any]] = None,
-    ) -> Callable:
-        """
-        Decorator to trace LLM calls (Bedrock, CrackSQL fallback, etc.).
+        fn: Callable,
+        args: tuple,
+        kwargs: dict,
+        run_name: str,
+        run_type: str,
+        base_tags: list[str],
+        extra_metadata: dict[str, Any],
+        capture_tool_result: bool = False,
+        capture_llm_tokens: bool = False,
+    ) -> Any:
+        """Execute ``fn`` synchronously, creating a LangSmith run around it."""
+        if not self._enabled or self.client is None:
+            return fn(*args, **kwargs)
 
-        Records:
-        - Model name, prompt, completion
-        - Token usage (input/output)
-        - Latency and cost estimation
-        - Custom metadata
+        start = time.perf_counter()
+        error: str | None = None
+        result: Any = None
+        run_tags = list(base_tags)
 
-        Args:
-            model_name: LLM model name (e.g., "amazon.nova-pro-v1:0")
-            tags: Optional list of tags
-            metadata: Optional metadata dict
+        try:
+            result = fn(*args, **kwargs)
+            if capture_tool_result and hasattr(result, "success"):
+                run_tags.append("success" if result.success else "failure")
+            return result
+        except Exception as exc:
+            error = str(exc)
+            run_tags.append("error")
+            raise
+        finally:
+            duration = time.perf_counter() - start
+            run_meta = {**extra_metadata, "duration_seconds": duration}
+            if capture_llm_tokens and result is not None:
+                run_meta["tokens_input"] = getattr(result, "tokens_input", 0)
+                run_meta["tokens_output"] = getattr(result, "tokens_output", 0)
 
-        Returns:
-            Decorated function that traces LLM execution.
-        """
-        def decorator(func: Callable[..., T]) -> Callable[..., T]:
-            @functools.wraps(func)
-            async def async_wrapper(*args, **kwargs) -> T:
-                if not self.client:
-                    return await func(*args, **kwargs)
+            self._submit_run(
+                name=run_name,
+                run_type=run_type,
+                tags=self._build_tags(run_tags, extra_metadata),
+                metadata=run_meta,
+                error=error,
+            )
 
-                trace_tags = self._build_tags(["llm", model_name] + (tags or []), metadata or {})
+    async def _run_async(
+        self,
+        fn: Callable,
+        args: tuple,
+        kwargs: dict,
+        run_name: str,
+        run_type: str,
+        base_tags: list[str],
+        extra_metadata: dict[str, Any],
+        capture_tool_result: bool = False,
+        capture_llm_tokens: bool = False,
+    ) -> Any:
+        """Execute ``fn`` asynchronously, creating a LangSmith run around it."""
+        if not self._enabled or self.client is None:
+            return await fn(*args, **kwargs)
 
-                try:
-                    start_time = time.time()
-                    result = await func(*args, **kwargs)
-                    duration = time.time() - start_time
+        start = time.perf_counter()
+        error: str | None = None
+        result: Any = None
+        run_tags = list(base_tags)
 
-                    # Try to extract token usage if available
-                    tokens_input = getattr(result, "tokens_input", None)
-                    tokens_output = getattr(result, "tokens_output", None)
+        try:
+            result = await fn(*args, **kwargs)
+            if capture_tool_result and hasattr(result, "success"):
+                run_tags.append("success" if result.success else "failure")
+            return result
+        except Exception as exc:
+            error = str(exc)
+            run_tags.append("error")
+            raise
+        finally:
+            duration = time.perf_counter() - start
+            run_meta = {**extra_metadata, "duration_seconds": duration}
+            if capture_llm_tokens and result is not None:
+                run_meta["tokens_input"] = getattr(result, "tokens_input", 0)
+                run_meta["tokens_output"] = getattr(result, "tokens_output", 0)
 
-                    self.client.create_run(
-                        name=f"llm::{model_name}",
-                        run_type="llm",
-                        inputs={"prompt": str(kwargs.get("prompt", ""))[:200]},
-                        outputs={"completion": str(result)[:200]},
-                        tags=trace_tags,
-                        metadata={
-                            "model": model_name,
-                            "duration_seconds": duration,
-                            "tokens_input": tokens_input,
-                            "tokens_output": tokens_output,
-                            **(metadata or {}),
-                        },
-                    )
+            self._submit_run(
+                name=run_name,
+                run_type=run_type,
+                tags=self._build_tags(run_tags, extra_metadata),
+                metadata=run_meta,
+                error=error,
+            )
 
-                    return result
+    def _submit_run(
+        self,
+        name: str,
+        run_type: str,
+        tags: list[str],
+        metadata: dict[str, Any],
+        error: str | None,
+    ) -> None:
+        """Fire-and-forget: post a completed run to LangSmith."""
+        try:
+            self.client.create_run(
+                name=name,
+                run_type=run_type,
+                project_name=self.project_name,
+                tags=tags,
+                metadata=metadata,
+                error=error,
+            )
+        except Exception as exc:
+            # Tracing must never break the migration workflow.
+            logger.debug("LangSmith run submission failed (non-fatal): %s", exc)
 
-                except Exception as e:
-                    duration = time.time() - start_time
-                    self.client.create_run(
-                        name=f"llm::{model_name}",
-                        run_type="llm",
-                        inputs={"prompt": str(kwargs.get("prompt", ""))[:200]},
-                        error=str(e),
-                        tags=trace_tags + ["error"],
-                        metadata={"model": model_name, "duration_seconds": duration, "error": str(e)},
-                    )
-                    raise
-
-            @functools.wraps(func)
-            def sync_wrapper(*args, **kwargs) -> T:
-                if not self.client:
-                    return func(*args, **kwargs)
-
-                trace_tags = self._build_tags(["llm", model_name] + (tags or []), metadata or {})
-
-                try:
-                    start_time = time.time()
-                    result = func(*args, **kwargs)
-                    duration = time.time() - start_time
-
-                    tokens_input = getattr(result, "tokens_input", None)
-                    tokens_output = getattr(result, "tokens_output", None)
-
-                    self.client.create_run(
-                        name=f"llm::{model_name}",
-                        run_type="llm",
-                        inputs={"prompt": str(kwargs.get("prompt", ""))[:200]},
-                        outputs={"completion": str(result)[:200]},
-                        tags=trace_tags,
-                        metadata={
-                            "model": model_name,
-                            "duration_seconds": duration,
-                            "tokens_input": tokens_input,
-                            "tokens_output": tokens_output,
-                            **(metadata or {}),
-                        },
-                    )
-
-                    return result
-
-                except Exception as e:
-                    duration = time.time() - start_time
-                    self.client.create_run(
-                        name=f"llm::{model_name}",
-                        run_type="llm",
-                        inputs={"prompt": str(kwargs.get("prompt", ""))[:200]},
-                        error=str(e),
-                        tags=trace_tags + ["error"],
-                        metadata={"model": model_name, "duration_seconds": duration, "error": str(e)},
-                    )
-                    raise
-
-            if asyncio.iscoroutinefunction(func):
-                return async_wrapper
-            else:
-                return sync_wrapper
-
-        return decorator
-
-
-# Singleton tracer instance
-_tracer: Optional[LangSmithTracer] = None
-
-
-def get_tracer(project_name: str = "capstone", api_key: Optional[str] = None) -> LangSmithTracer:
-    """
-    Get or create the singleton LangSmith tracer.
-
-    Args:
-        project_name: LangSmith project name
-        api_key: LangSmith API key (optional, reads from env if not provided)
-
-    Returns:
-        LangSmithTracer singleton.
-    """
-    global _tracer
-    if _tracer is None:
-        _tracer = LangSmithTracer(project_name, api_key)
-    return _tracer
+    @staticmethod
+    def _build_tags(
+        base_tags: list[str],
+        metadata: dict[str, Any],
+    ) -> list[str]:
+        """Merge base tags with key=value pairs from metadata."""
+        tags = list(base_tags)
+        for k, v in metadata.items():
+            if k != "duration_seconds":  # skip internal timing key
+                tags.append(f"{k}={v}")
+        return tags

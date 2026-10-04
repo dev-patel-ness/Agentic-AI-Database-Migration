@@ -102,7 +102,7 @@ class TestKubectlAdapter:
         with patch('tool_adapters.kubectl_adapter.kubectl.subprocess.run') as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0,
-                stdout="deployment "test-app" successfully rolled out",
+                stdout="deployment 'test-app' successfully rolled out",
                 stderr=""
             )
             
@@ -314,7 +314,7 @@ data:
         with patch('tool_adapters.kubectl_adapter.kubectl.subprocess.run') as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0,
-                stdout="deployment.apps "test-app" deleted",
+                stdout="deployment.apps 'test-app' deleted",
                 stderr=""
             )
             
