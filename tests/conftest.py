@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+from dotenv import load_dotenv
 
 from orchestrator import connection_registry
 from orchestrator.state import DiscoveryResult
+
+# boto3's default credential chain only prefers env vars over a shared
+# ~/.aws/credentials [default] profile if those env vars are actually set --
+# pytest never auto-loads .env, so without this, a stale local AWS CLI
+# profile silently wins over the (correct) keys in .env.
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 
 @pytest.fixture(autouse=True)

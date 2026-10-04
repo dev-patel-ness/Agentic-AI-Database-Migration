@@ -42,7 +42,7 @@ def test_run_discovery_persists_catalog_and_embeddings(job_id):
     except Exception as exc:  # noqa: BLE001 - sample DB / metadata DB / Bedrock unreachable
         pytest.skip(f"discovery pipeline not reachable: {exc}")
 
-    assert len(result.object_catalog) == 4
+    assert len(result.object_catalog) == 12
     assert result.dependency_graph["projects"] == ["departments"]
 
     with metadata_store.metadata_connection() as conn:
@@ -53,9 +53,9 @@ def test_run_discovery_persists_catalog_and_embeddings(job_id):
         catalog_count = conn.execute(
             "SELECT count(*) FROM object_catalog_entries WHERE job_id = %s", (job_id,)
         ).fetchone()[0]
-        assert catalog_count == 4
+        assert catalog_count == 12
 
         embedding_count = conn.execute(
             "SELECT count(*) FROM discovery_embeddings WHERE job_id = %s", (job_id,)
         ).fetchone()[0]
-        assert embedding_count == 4
+        assert embedding_count == 12
