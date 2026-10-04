@@ -1,0 +1,87 @@
+{
+  "dashboard": {
+    "title": "Tool Adapter Success Rate",
+    "description": "Tracks success rates, failure reasons, and latency for all tool adapters (Terraform, kubectl, schema extractor, SeaTunnel, etc.)",
+    "tags": ["Phase9", "observability", "tools", "adapters"],
+    "timezone": "UTC",
+    "schemaVersion": 38,
+    "version": 0,
+    "refresh": "30s",
+    "panels": [
+      {
+        "id": 1,
+        "title": "Tool Adapter Success Rate by Type",
+        "type": "gauge",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+        "targets": [
+          {
+            "expr": "100 * (rate(tool_adapter_success_total[5m]) / (rate(tool_adapter_calls_total[5m]) + 0.0001))",
+            "legendFormat": "{{tool_name}} success %"
+          }
+        ]
+      },
+      {
+        "id": 2,
+        "title": "Tool Adapter Failure Count",
+        "type": "bar",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+        "targets": [
+          {
+            "expr": "increase(tool_adapter_failure_total[5m])",
+            "legendFormat": "{{tool_name}} - {{error_type}}"
+          }
+        ]
+      },
+      {
+        "id": 3,
+        "title": "Tool Adapter Latency (p95)",
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, rate(tool_adapter_latency_seconds_bucket[5m]))",
+            "legendFormat": "{{tool_name}}::{{operation}}"
+          }
+        ]
+      },
+      {
+        "id": 4,
+        "title": "Total Tool Calls per Operation",
+        "type": "stat",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+        "targets": [
+          {
+            "expr": "increase(tool_adapter_calls_total[1h])",
+            "legendFormat": "{{tool_name}}::{{operation}}"
+          }
+        ]
+      },
+      {
+        "id": 5,
+        "title": "Terraform Adapter Performance",
+        "type": "table",
+        "gridPos": {"h": 6, "w": 12, "x": 0, "y": 16},
+        "targets": [
+          {
+            "expr": "tool_adapter_calls_total{tool_name=\"terraform_adapter\"}",
+            "format": "table",
+            "instant": true
+          }
+        ]
+      },
+      {
+        "id": 6,
+        "title": "Kubectl Adapter Performance",
+        "type": "table",
+        "gridPos": {"h": 6, "w": 12, "x": 12, "y": 16},
+        "targets": [
+          {
+            "expr": "tool_adapter_calls_total{tool_name=\"kubectl_adapter\"}",
+            "format": "table",
+            "instant": true
+          }
+        ]
+      }
+    ]
+  }
+}

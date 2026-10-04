@@ -1,0 +1,97 @@
+{
+  "dashboard": {
+    "title": "Agent Latency & LLM Cost",
+    "description": "Tracks agent execution latency, token usage, and estimated cost for Bedrock LLM calls",
+    "tags": ["Phase9", "observability", "agents", "cost"],
+    "timezone": "UTC",
+    "schemaVersion": 38,
+    "version": 0,
+    "refresh": "30s",
+    "panels": [
+      {
+        "id": 1,
+        "title": "Agent Latency Distribution (p50/p95/p99)",
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.50, rate(agent_latency_seconds_bucket[5m]))",
+            "legendFormat": "p50"
+          },
+          {
+            "expr": "histogram_quantile(0.95, rate(agent_latency_seconds_bucket[5m]))",
+            "legendFormat": "p95"
+          },
+          {
+            "expr": "histogram_quantile(0.99, rate(agent_latency_seconds_bucket[5m]))",
+            "legendFormat": "p99"
+          }
+        ]
+      },
+      {
+        "id": 2,
+        "title": "Agent Success Rate",
+        "type": "gauge",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+        "targets": [
+          {
+            "expr": "100 * (rate(agent_invocations_success_total[5m]) / (rate(agent_invocations_total[5m]) + 0.0001))",
+            "legendFormat": "Success %"
+          }
+        ]
+      },
+      {
+        "id": 3,
+        "title": "LLM Token Usage (Input/Output)",
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+        "targets": [
+          {
+            "expr": "rate(llm_tokens_input_total[5m])",
+            "legendFormat": "Input tokens/sec"
+          },
+          {
+            "expr": "rate(llm_tokens_output_total[5m])",
+            "legendFormat": "Output tokens/sec"
+          }
+        ]
+      },
+      {
+        "id": 4,
+        "title": "LLM Call Latency by Model",
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, rate(llm_call_latency_seconds_bucket[5m]))",
+            "legendFormat": "{{model_name}} p95"
+          }
+        ]
+      },
+      {
+        "id": 5,
+        "title": "Agent Invocations per 5min",
+        "type": "bar",
+        "gridPos": {"h": 6, "w": 12, "x": 0, "y": 16},
+        "targets": [
+          {
+            "expr": "increase(agent_invocations_total[5m])",
+            "legendFormat": "{{agent_name}}"
+          }
+        ]
+      },
+      {
+        "id": 6,
+        "title": "Estimated Bedrock Cost (tokens × rate)",
+        "type": "stat",
+        "gridPos": {"h": 6, "w": 12, "x": 12, "y": 16},
+        "targets": [
+          {
+            "expr": "(increase(llm_tokens_input_total[1h]) * 0.0003 + increase(llm_tokens_output_total[1h]) * 0.0006) / 1000",
+            "legendFormat": "Cost ($USD) last 1h"
+          }
+        ]
+      }
+    ]
+  }
+}

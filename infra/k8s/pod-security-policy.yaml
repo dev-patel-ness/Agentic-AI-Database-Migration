@@ -1,0 +1,208 @@
+"""
+Kubernetes Pod Security Policies for hardening deployments.
+
+Enforces:
+- Non-root user execution
+- Read-only root filesystem (where applicable)
+- No privilege escalation
+- No privileged containers
+- Resource limits
+"""
+
+apiVersion: policy/v1beta1
+kind: PodSecurityPolicy
+metadata:
+  name: capstone-restricted
+  annotations:
+    seccomp.security.alpha.kubernetes.io/allowedProfileNames: 'runtime/default'
+    apparmor.security.beta.kubernetes.io/allowedProfileNames: 'runtime/default'
+    seccomp.security.alpha.kubernetes.io/defaultProfileName:  'runtime/default'
+    apparmor.security.beta.kubernetes.io/defaultProfileName:  'runtime/default'
+spec:
+  # Privilege and Access Settings
+  privileged: false
+  allowPrivilegeEscalation: false
+  requiredDropCapabilities:
+    - ALL
+  allowedCapabilities: []
+  
+  # User and Group Settings
+  runAsUser:
+    rule: 'MustRunAsNonRoot'
+  runAsGroup:
+    rule: 'MustRunAs'
+    ranges:
+      - min: 1000
+        max: 65535
+  fsGroup:
+    rule: 'MustRunAs'
+    ranges:
+      - min: 1000
+        max: 65535
+  supplementalGroups:
+    rule: 'MustRunAs'
+    ranges:
+      - min: 1000
+        max: 65535
+  
+  # Volume Settings
+  readOnlyRootFilesystem: false  # Apps need to write logs
+  allowedFlexVolumes: []
+  volumes:
+    - 'configMap'
+    - 'emptyDir'
+    - 'projected'
+    - 'secret'
+    - 'downwardAPI'
+    - 'persistentVolumeClaim'
+  
+  # SELinux Settings
+  seLinux:
+    rule: 'MustRunAs'
+    seLinuxOptions:
+      level: "s0:c123,c456"
+  
+  # Sysctls Settings
+  allowedUnsafeSysctls: []
+  forbiddenSysctls: []
+  
+  # Host Access Settings
+  hostNetwork: false
+  hostIPC: false
+  hostPID: false
+  
+  # Seccomp Profile
+  seccomp:
+    defaultProfile: 'runtime/default'
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: capstone-psp-restricted
+rules:
+- apiGroups: ['policy']
+  resources: ['podsecuritypolicies']
+  verbs: ['use']
+  resourceNames:
+  - capstone-restricted
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: capstone-psp-restricted
+roleRef:
+  kind: ClusterRole
+  name: capstone-psp-restricted
+  apiGroup: rbac.authorization.k8s.io
+subjects:
+# Platform service account
+- kind: ServiceAccount
+  name: capstone-platform-sa
+  namespace: ns-platform
+# App service account
+- kind: ServiceAccount
+  name: capstone-app-sa
+  namespace: ns-app
+---
+# RBAC: Platform deployment service account with minimal permissions
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: capstone-platform-sa
+  namespace: ns-platform
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/capstone-deployment-agent
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: capstone-platform-role
+rules:
+# Pods - read only
+- apiGroups: ['']
+  resources: ['pods', 'pods/log']
+  verbs: ['get', 'list', 'watch']
+# Deployments - read only
+- apiGroups: ['apps']
+  resources: ['deployments', 'deployments/status', 'replicasets']
+  verbs: ['get', 'list', 'watch']
+# ConfigMaps/Secrets - read only (from ns-platform namespace)
+- apiGroups: ['']
+  resources: ['configmaps', 'secrets']
+  verbs: ['get', 'list']
+  namespaceSelector:
+    matchLabels:
+      name: ns-platform
+# Services - read only
+- apiGroups: ['']
+  resources: ['services']
+  verbs: ['get', 'list', 'watch']
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: capstone-platform-role-binding
+roleRef:
+  kind: ClusterRole
+  name: capstone-platform-role
+  apiGroup: rbac.authorization.k8s.io
+subjects:
+- kind: ServiceAccount
+  name: capstone-platform-sa
+  namespace: ns-platform
+---
+# RBAC: App deployment service account with minimal permissions
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: capstone-app-sa
+  namespace: ns-app
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/capstone-app-sa
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: capstone-app-role
+  namespace: ns-app
+rules:
+# ConfigMaps - read only (for dynamic config)
+- apiGroups: ['']
+  resources: ['configmaps']
+  verbs: ['get', 'list', 'watch']
+# Secrets - read only (for API keys/credentials if injected via IRSA)
+- apiGroups: ['']
+  resources: ['secrets']
+  verbs: ['get']
+  resourceNames: ['db-credentials', 'bedrock-config']
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: capstone-app-role-binding
+  namespace: ns-app
+roleRef:
+  kind: Role
+  name: capstone-app-role
+  apiGroup: rbac.authorization.k8s.io
+subjects:
+- kind: ServiceAccount
+  name: capstone-app-sa
+  namespace: ns-app
+---
+# NetworkPolicy label enforcement
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ns-platform
+  labels:
+    name: ns-platform
+    pod-security.kubernetes.io/enforce: restricted
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ns-app
+  labels:
+    name: ns-app
+    pod-security.kubernetes.io/enforce: restricted

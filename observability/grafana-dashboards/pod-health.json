@@ -1,0 +1,101 @@
+{
+  "dashboard": {
+    "title": "Pod Health & Cluster Status",
+    "description": "Tracks pod readiness, availability, restarts, and overall deployment health in Kubernetes clusters",
+    "tags": ["Phase9", "observability", "kubernetes", "pod-health"],
+    "timezone": "UTC",
+    "schemaVersion": 38,
+    "version": 0,
+    "refresh": "30s",
+    "panels": [
+      {
+        "id": 1,
+        "title": "Pod Ready vs Desired Replicas",
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+        "targets": [
+          {
+            "expr": "pod_ready_replicas",
+            "legendFormat": "{{deployment_name}} ready"
+          },
+          {
+            "expr": "pod_desired_replicas",
+            "legendFormat": "{{deployment_name}} desired"
+          }
+        ]
+      },
+      {
+        "id": 2,
+        "title": "Pod Availability Percentage",
+        "type": "gauge",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+        "targets": [
+          {
+            "expr": "100 * (pod_available_replicas / (pod_desired_replicas + 0.0001))",
+            "legendFormat": "{{deployment_name}}"
+          }
+        ]
+      },
+      {
+        "id": 3,
+        "title": "Pod Restart Count",
+        "type": "table",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+        "targets": [
+          {
+            "expr": "pod_restart_count",
+            "format": "table"
+          }
+        ]
+      },
+      {
+        "id": 4,
+        "title": "Deployment Status (ns-platform)",
+        "type": "stat",
+        "gridPos": {"h": 8, "w": 6, "x": 12, "y": 8},
+        "targets": [
+          {
+            "expr": "pod_ready_replicas{deployment_name=\"capstone-platform\"}",
+            "legendFormat": "Ready replicas"
+          }
+        ]
+      },
+      {
+        "id": 5,
+        "title": "Deployment Status (ns-app)",
+        "type": "stat",
+        "gridPos": {"h": 8, "w": 6, "x": 18, "y": 8},
+        "targets": [
+          {
+            "expr": "pod_ready_replicas{deployment_name=\"capstone-app\"}",
+            "legendFormat": "Ready replicas"
+          }
+        ]
+      },
+      {
+        "id": 6,
+        "title": "Pod Restarts (last 24h)",
+        "type": "bar",
+        "gridPos": {"h": 6, "w": 12, "x": 0, "y": 16},
+        "targets": [
+          {
+            "expr": "increase(pod_restart_count[24h])",
+            "legendFormat": "{{pod_name}}"
+          }
+        ]
+      },
+      {
+        "id": 7,
+        "title": "Pods per Cluster",
+        "type": "stat",
+        "gridPos": {"h": 6, "w": 12, "x": 12, "y": 16},
+        "targets": [
+          {
+            "expr": "sum(pod_desired_replicas) by (cluster_name)",
+            "legendFormat": "{{cluster_name}}"
+          }
+        ]
+      }
+    ]
+  }
+}

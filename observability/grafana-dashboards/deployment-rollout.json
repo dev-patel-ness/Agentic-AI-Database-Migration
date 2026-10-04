@@ -1,0 +1,89 @@
+{
+  "dashboard": {
+    "title": "Deployment Rollout & Rollback",
+    "description": "Tracks deployment rollout success/failure rates, duration, and rollback events for Phase 8 cutover operations",
+    "tags": ["Phase9", "Phase8", "observability", "deployment", "cutover"],
+    "timezone": "UTC",
+    "schemaVersion": 38,
+    "version": 0,
+    "refresh": "30s",
+    "panels": [
+      {
+        "id": 1,
+        "title": "Deployment Rollout Success Rate",
+        "type": "gauge",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+        "targets": [
+          {
+            "expr": "100 * (rate(deployment_rollout_success_total[1h]) / (rate(deployment_rollout_success_total[1h]) + rate(deployment_rollout_failure_total[1h]) + 0.0001))",
+            "legendFormat": "Success %"
+          }
+        ]
+      },
+      {
+        "id": 2,
+        "title": "Rollout Duration (p95)",
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, rate(deployment_rollout_duration_seconds_bucket[5m]))",
+            "legendFormat": "{{deployment_name}} p95"
+          }
+        ]
+      },
+      {
+        "id": 3,
+        "title": "Deployment Failures by Reason",
+        "type": "pie",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+        "targets": [
+          {
+            "expr": "increase(deployment_rollout_failure_total[24h])",
+            "legendFormat": "{{error_reason}}"
+          }
+        ]
+      },
+      {
+        "id": 4,
+        "title": "Rollback Events by Reason",
+        "type": "bar",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+        "targets": [
+          {
+            "expr": "increase(deployment_rollback_total[24h])",
+            "legendFormat": "{{rollback_reason}}"
+          }
+        ]
+      },
+      {
+        "id": 5,
+        "title": "Rollout Success/Failure Trend",
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+        "targets": [
+          {
+            "expr": "rate(deployment_rollout_success_total[5m])",
+            "legendFormat": "Success"
+          },
+          {
+            "expr": "rate(deployment_rollout_failure_total[5m])",
+            "legendFormat": "Failure"
+          }
+        ]
+      },
+      {
+        "id": 6,
+        "title": "Total Rollbacks (24h)",
+        "type": "stat",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+        "targets": [
+          {
+            "expr": "increase(deployment_rollback_total[24h])",
+            "legendFormat": "Rollback count"
+          }
+        ]
+      }
+    ]
+  }
+}

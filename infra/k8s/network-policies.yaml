@@ -1,0 +1,211 @@
+"""
+Kubernetes Network Policies for capstone platform and app deployments.
+
+Implements zero-trust networking:
+- Deny all ingress/egress by default
+- Whitelist only required traffic
+- ns-platform: Receives from ns-app only (ALB ingress), sends to databases + Bedrock
+- ns-app: Receives from ALB + ns-platform, sends to databases + ns-platform
+"""
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-all-ingress
+  namespace: ns-platform
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-all-egress
+  namespace: ns-platform
+spec:
+  podSelector: {}
+  policyTypes:
+  - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-from-app
+  namespace: ns-platform
+spec:
+  podSelector:
+    matchLabels:
+      app: capstone-platform
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: ns-app
+    ports:
+    - protocol: TCP
+      port: 8000
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-to-databases
+  namespace: ns-platform
+spec:
+  podSelector:
+    matchLabels:
+      app: capstone-platform
+  policyTypes:
+  - Egress
+  egress:
+  # Allow DNS
+  - to:
+    - namespaceSelector: {}
+    ports:
+    - protocol: UDP
+      port: 53
+  # Allow to Kubernetes API (for kubectl operations via IRSA)
+  - to:
+    - namespaceSelector: {}
+      podSelector:
+        matchLabels:
+          component: kube-apiserver
+    ports:
+    - protocol: TCP
+      port: 443
+  # Allow to RDS databases (PostgreSQL 5432, MySQL 3306, Oracle 1521)
+  - to:
+    - ipBlock:
+        cidr: 10.0.0.0/16  # VPC CIDR; databases in private subnets
+    ports:
+    - protocol: TCP
+      port: 5432
+    - protocol: TCP
+      port: 3306
+    - protocol: TCP
+      port: 1521
+  # Allow to AWS Bedrock (443)
+  - to:
+    - namespaceSelector: {}
+    ports:
+    - protocol: TCP
+      port: 443
+  # Allow to Secrets Manager (443)
+  - to:
+    - namespaceSelector: {}
+    ports:
+    - protocol: TCP
+      port: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-all-ingress
+  namespace: ns-app
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-all-egress
+  namespace: ns-app
+spec:
+  podSelector: {}
+  policyTypes:
+  - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-from-alb
+  namespace: ns-app
+spec:
+  podSelector:
+    matchLabels:
+      app: capstone-app
+  policyTypes:
+  - Ingress
+  ingress:
+  # Allow from ALB controller
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: kube-system
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: aws-load-balancer-controller
+    ports:
+    - protocol: TCP
+      port: 8501
+  # Allow from ns-platform (API backend)
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: ns-platform
+    ports:
+    - protocol: TCP
+      port: 8501
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-to-platform-and-dbs
+  namespace: ns-app
+spec:
+  podSelector:
+    matchLabels:
+      app: capstone-app
+  policyTypes:
+  - Egress
+  egress:
+  # Allow DNS
+  - to:
+    - namespaceSelector: {}
+    ports:
+    - protocol: UDP
+      port: 53
+  # Allow to platform API (ns-platform namespace)
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: ns-platform
+    ports:
+    - protocol: TCP
+      port: 8000
+  # Allow to RDS databases
+  - to:
+    - ipBlock:
+        cidr: 10.0.0.0/16
+    ports:
+    - protocol: TCP
+      port: 5432
+    - protocol: TCP
+      port: 3306
+    - protocol: TCP
+      port: 1521
+  # Allow to AWS services (Bedrock, Secrets Manager, Logs)
+  - to:
+    - namespaceSelector: {}
+    ports:
+    - protocol: TCP
+      port: 443
+---
+# Label namespaces for network policy selectors
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ns-platform
+  labels:
+    name: ns-platform
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ns-app
+  labels:
+    name: ns-app

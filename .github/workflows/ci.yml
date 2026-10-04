@@ -1,4 +1,4 @@
-name: CI - Lint and Test
+name: CI - Build, Test, and Push
 
 on:
   push:
@@ -10,6 +10,10 @@ on:
     branches:
       - main
       - develop
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
   lint:
@@ -50,6 +54,7 @@ jobs:
   test:
     name: Unit Tests
     runs-on: ubuntu-latest
+    needs: lint
     
     services:
       postgres:
@@ -98,6 +103,318 @@ jobs:
         with:
           files: ./coverage.xml
           flags: unittests
+
+  build:
+    name: Build and Push Docker Images
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v4
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix={{branch}}-
+
+      - name: Build and push API image
+        uses: docker/build-push-action@v4
+        with:
+          context: ./apps/api-fastapi
+          file: ./apps/api-fastapi/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}-api
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push UI image
+        uses: docker/build-push-action@v4
+        with:
+          context: ./apps/ui-streamlit
+          file: ./apps/ui-streamlit/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}-ui
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  security-scan:
+    name: Security Vulnerability Scan
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: Upload Trivy results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: security-scan
+    if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
+    environment:
+      name: staging
+      url: https://staging.capstone.internal
+    
+    env:
+      AWS_REGION: us-east-1
+      CLUSTER_NAME: capstone-staging
+      TF_VERSION: 1.5.0
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: ${{ secrets.AWS_STAGING_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Init (Staging)
+        run: |
+          cd infra/terraform
+          terraform init \
+            -backend-config="bucket=${{ secrets.TF_BACKEND_BUCKET }}" \
+            -backend-config="key=staging/terraform.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="dynamodb_table=${{ secrets.TF_BACKEND_LOCK_TABLE }}"
+
+      - name: Terraform Plan (Staging)
+        run: |
+          cd infra/terraform
+          terraform plan \
+            -var-file="staging.tfvars" \
+            -out=tfplan
+
+      - name: Terraform Apply (Staging)
+        run: |
+          cd infra/terraform
+          terraform apply -auto-approve tfplan
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.28.0'
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --name ${{ env.CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: '3.12.0'
+
+      - name: Deploy Platform Helm Chart (Staging)
+        run: |
+          helm upgrade --install capstone-platform infra/helm/capstone-platform \
+            -f infra/helm/capstone-platform/values.yaml \
+            --namespace ns-platform \
+            --create-namespace \
+            --set image.tag=${{ github.sha }} \
+            --wait --timeout 5m
+
+      - name: Deploy App Helm Chart (Staging)
+        run: |
+          helm upgrade --install capstone-app infra/helm/capstone-app \
+            -f infra/helm/capstone-app/values.yaml \
+            --namespace ns-app \
+            --create-namespace \
+            --set image.tag=${{ github.sha }} \
+            --wait --timeout 5m
+
+  e2e-test:
+    name: E2E Migration Test (Staging)
+    runs-on: ubuntu-latest
+    needs: deploy-staging
+    if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
+    
+    env:
+      API_ENDPOINT: "http://capstone-platform.ns-platform:8000"
+      AWS_REGION: us-east-1
+      CLUSTER_NAME: capstone-staging
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          cache: 'poetry'
+
+      - name: Install Poetry
+        run: |
+          curl -sSL https://install.python-poetry.org | python3 -
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Install dependencies
+        run: poetry install
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: ${{ secrets.AWS_STAGING_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --name ${{ env.CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+
+      - name: Wait for API readiness
+        run: |
+          kubectl wait --for=condition=ready pod -l app=capstone-platform -n ns-platform --timeout=300s
+
+      - name: Run E2E migration test (MySQL → PostgreSQL)
+        run: poetry run pytest tests/e2e/test_deployment_phase8.py -v --tb=short
+        env:
+          MIGRATION_SOURCE_DIALECT: mysql
+          MIGRATION_TARGET_DIALECT: postgresql
+          MIGRATION_MODE: e2e
+          API_ENDPOINT: ${{ env.API_ENDPOINT }}
+
+  promote-to-prod:
+    name: Promote to Production (Manual Approval)
+    runs-on: ubuntu-latest
+    needs: e2e-test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment:
+      name: production
+      url: https://capstone.production
+    
+    steps:
+      - name: Approve production deployment
+        run: |
+          echo "✅ Production deployment approved. Ready to deploy."
+          echo "⏭️  Run 'Deploy to Production' workflow or manual \`terraform apply\` in prod account."
+
+  deploy-prod:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: promote-to-prod
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    env:
+      AWS_REGION: us-east-1
+      CLUSTER_NAME: capstone-prod
+      TF_VERSION: 1.5.0
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: ${{ secrets.AWS_PROD_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Init (Production)
+        run: |
+          cd infra/terraform
+          terraform init \
+            -backend-config="bucket=${{ secrets.TF_BACKEND_BUCKET }}" \
+            -backend-config="key=prod/terraform.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="dynamodb_table=${{ secrets.TF_BACKEND_LOCK_TABLE }}"
+
+      - name: Terraform Plan (Production)
+        run: |
+          cd infra/terraform
+          terraform plan \
+            -var-file="prod.tfvars" \
+            -out=tfplan
+
+      - name: Terraform Apply (Production)
+        run: |
+          cd infra/terraform
+          terraform apply -auto-approve tfplan
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.28.0'
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --name ${{ env.CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: '3.12.0'
+
+      - name: Deploy Platform Helm Chart (Production)
+        run: |
+          helm upgrade --install capstone-platform infra/helm/capstone-platform \
+            -f infra/helm/capstone-platform/values-prod.yaml \
+            --namespace ns-platform \
+            --create-namespace \
+            --set image.tag=${{ github.sha }} \
+            --wait --timeout 5m
+
+      - name: Deploy App Helm Chart (Production)
+        run: |
+          helm upgrade --install capstone-app infra/helm/capstone-app \
+            -f infra/helm/capstone-app/values-prod.yaml \
+            --namespace ns-app \
+            --create-namespace \
+            --set image.tag=${{ github.sha }} \
+            --wait --timeout 5m
+
+      - name: Post-deployment health check
+        run: |
+          kubectl rollout status deployment/capstone-platform -n ns-platform --timeout=300s
+          kubectl rollout status deployment/capstone-app -n ns-app --timeout=300s
+          echo "✅ Production deployment complete and healthy."
           name: codecov-umbrella
         continue-on-error: true
 
