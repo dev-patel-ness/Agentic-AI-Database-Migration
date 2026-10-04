@@ -25,6 +25,7 @@ from orchestrator import connection_registry
 from orchestrator.checkpointer import build_checkpointer, build_checkpointer_pool
 from orchestrator.graph import compile_graph
 from orchestrator.state import DialectPair, MigrationState
+from tool_adapters.schema_extractor_adapter import SchemaExtractorAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -129,7 +130,41 @@ class JobStatusResponse(BaseModel):
     interrupt: Optional[dict[str, Any]] = None
 
 
+class SchemaSqlResponse(BaseModel):
+    source_dialect: str
+    target_dialect: str
+    source_schema_sql: str
+    target_schema_sql: str
+
+
 # --- Helpers ------------------------------------------------------------------
+
+
+# schema.sql convention: tables first, then dependent objects, FK constraints last.
+_SCHEMA_SQL_OBJECT_ORDER = ("table", "view", "procedure", "function", "trigger", "foreign_key")
+
+
+def _dump_schema_sql(
+    adapter: SchemaExtractorAdapter, dialect_name: str, connection_config: dict[str, Any]
+) -> str:
+    """Live-introspect one side's full object catalog and concatenate every
+    object's DDL text into a single schema.sql-style script."""
+    config = adapter.prepare({"dialect": dialect_name, "connection": connection_config})
+    result = adapter.run(config)
+    if not result.success:
+        raise RuntimeError(result.error or "schema introspection failed")
+
+    by_type: dict[str, list[dict[str, Any]]] = {}
+    for entry in result.output["object_catalog"]:
+        by_type.setdefault(entry["object_type"], []).append(entry)
+
+    chunks: list[str] = [
+        f"-- {object_type.upper()}: {entry['schema']}.{entry['name']}\n{entry['definition'].rstrip().rstrip(';')};"
+        for object_type in _SCHEMA_SQL_OBJECT_ORDER
+        for entry in by_type.get(object_type, [])
+        if entry.get("definition")
+    ]
+    return "\n\n".join(chunks) if chunks else "-- no objects found"
 
 
 def _thread_config(job_id: str) -> dict[str, Any]:
@@ -212,6 +247,43 @@ def create_job(payload: JobCreateRequest, request: Request) -> JobCreateResponse
 def get_job(job_id: str, request: Request) -> JobStatusResponse:
     snapshot = request.app.state.graph.get_state(_thread_config(job_id))
     return _snapshot_to_status(job_id, snapshot)
+
+
+@app.get("/jobs/{job_id}/schema-sql", response_model=SchemaSqlResponse)
+def get_schema_sql(job_id: str, request: Request) -> SchemaSqlResponse:
+    """Live side-by-side schema.sql for the full source DB and full target DB
+    (not just the job's persisted discovery snapshot), for UI comparison."""
+    snapshot = request.app.state.graph.get_state(_thread_config(job_id))
+    if not snapshot.values:
+        raise HTTPException(status_code=404, detail="job not found")
+    state = MigrationState.model_validate(snapshot.values)
+
+    conns = connection_registry.get(job_id)
+    if conns is None:
+        raise HTTPException(
+            status_code=410,
+            detail=(
+                "source/target connection details are no longer available for this "
+                "job -- either it reached a terminal state (Done/Aborted/RolledBack), "
+                "or the API process restarted since the job was created (the registry "
+                "is in-memory only); create a new job to use this feature"
+            ),
+        )
+    source_connection, target_connection = conns
+
+    adapter = SchemaExtractorAdapter()
+    try:
+        source_sql = _dump_schema_sql(adapter, state.dialects.source, source_connection)
+        target_sql = _dump_schema_sql(adapter, state.dialects.target, target_connection)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"failed to introspect schema: {exc}") from exc
+
+    return SchemaSqlResponse(
+        source_dialect=state.dialects.source,
+        target_dialect=state.dialects.target,
+        source_schema_sql=source_sql,
+        target_schema_sql=target_sql,
+    )
 
 
 @app.post("/jobs/{job_id}/review", status_code=202)

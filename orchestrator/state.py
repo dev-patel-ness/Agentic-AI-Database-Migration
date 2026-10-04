@@ -127,6 +127,17 @@ class DeploymentStatus(BaseModel):
     detail: Optional[str] = None
 
 
+class ExecutionStep(BaseModel):
+    """Detailed technical step logged during execution (for UI observability)."""
+
+    phase: str  # "Discover", "Analyse", "Plan", "Transform", etc.
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    operation: str  # "Running SchemaExtractorAdapter", "LLM call for employees schema", etc.
+    details: Optional[str] = None  # Additional context: prompt, parameters, result summary, etc.
+    status: str = "IN_PROGRESS"  # "IN_PROGRESS" | "SUCCESS" | "FAILED"
+    error: Optional[str] = None  # If status is FAILED
+
+
 class MigrationState(BaseModel):
     """LangGraph state schema. Node functions return partial-update dicts of these fields."""
 
@@ -142,6 +153,7 @@ class MigrationState(BaseModel):
     validation: Optional[ValidationReport] = None
     test_report: Optional[TestReport] = None
     deployment: Optional[DeploymentStatus] = None
+    execution_trace: list[ExecutionStep] = Field(default_factory=list)  # Detailed step-by-step log for UI observability
 
     current_phase: str = "Discover"
     status: str = JobStatus.RUNNING.value

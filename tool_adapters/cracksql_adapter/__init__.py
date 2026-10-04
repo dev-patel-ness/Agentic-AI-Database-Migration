@@ -247,6 +247,18 @@ class CrackSQLAdapter(BaseToolAdapter):
                         src_sql=source_sql, src_dialect=source_dialect, tgt_dialect=target_dialect
                     )
                 rule_translated_sql = rule_fallback if isinstance(rule_fallback, str) else rule_fallback[0]
+                if rule_translated_sql == FAILED_TEMPLATE:
+                    # Every method (hybrid, LLM-only, rule-only) failed to translate.
+                    return ToolResult(
+                        success=True,
+                        output={
+                            "translated_sql": None,
+                            "method": "none",
+                            "note": "all translation methods returned FAILED_TEMPLATE",
+                        },
+                        confidence_score=0.0,
+                        execution_time_seconds=time.monotonic() - start,
+                    )
                 return ToolResult(
                     success=True,
                     output={

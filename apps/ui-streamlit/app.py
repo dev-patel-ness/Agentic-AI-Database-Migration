@@ -48,7 +48,19 @@ _SAMPLE_DEFAULTS: dict[str, dict[str, Any]] = {
     },
 }
 
-st.set_page_config(page_title="Agentic Migration Platform", layout="centered")
+
+# All 6 ordered pairs across the 3 supported dialects, for one-click test setup.
+_SAMPLE_PRESETS: dict[str, tuple[str, str]] = {
+    "MySQL -> PostgreSQL": ("mysql", "postgresql"),
+    "PostgreSQL -> MySQL": ("postgresql", "mysql"),
+    "MySQL -> Oracle": ("mysql", "oracle"),
+    "Oracle -> MySQL": ("oracle", "mysql"),
+    "PostgreSQL -> Oracle": ("postgresql", "oracle"),
+    "Oracle -> PostgreSQL": ("oracle", "postgresql"),
+}
+_PRESET_PLACEHOLDER = "-- choose dialects manually --"
+
+st.set_page_config(page_title="Agentic Migration Platform", layout="wide")
 
 
 def _headers() -> dict[str, str]:
@@ -94,6 +106,12 @@ def _submit_review(job_id: str, decision: str, reviewer: str, comment: str) -> N
     resp.raise_for_status()
 
 
+def _get_schema_sql(job_id: str) -> dict[str, Any]:
+    resp = requests.get(f"{API_BASE_URL}/jobs/{job_id}/schema-sql", headers=_headers(), timeout=60)
+    resp.raise_for_status()
+    return resp.json()
+
+
 def _connection_form(label: str, dialect: str, key_prefix: str) -> dict[str, Any]:
     defaults = _SAMPLE_DEFAULTS.get(dialect, {})
     st.markdown(f"**{label} connection** ({dialect})")
@@ -126,9 +144,33 @@ def _connection_form(label: str, dialect: str, key_prefix: str) -> dict[str, Any
     }
 
 
+def _apply_preset() -> None:
+    pair = _SAMPLE_PRESETS.get(st.session_state.get("preset_choice", ""))
+    if pair is None:
+        return
+    source_dialect, target_dialect = pair
+    st.session_state["source_dialect"] = source_dialect
+    st.session_state["target_dialect"] = target_dialect
+    for key_prefix, dialect in (("src", source_dialect), ("tgt", target_dialect)):
+        defaults = _SAMPLE_DEFAULTS.get(dialect, {})
+        st.session_state[f"{key_prefix}_host"] = defaults.get("host", "localhost")
+        st.session_state[f"{key_prefix}_port"] = defaults.get("port", 5432)
+        st.session_state[f"{key_prefix}_user"] = defaults.get("username", "")
+        st.session_state[f"{key_prefix}_pw"] = defaults.get("password", "")
+        st.session_state[f"{key_prefix}_db"] = defaults.get("database", "")
+        st.session_state[f"{key_prefix}_schema"] = defaults.get("schema_name", "")
+
+
 st.title("Agentic AI-Powered Database Migration Platform")
 
 with st.expander("Create a new migration job", expanded="job_id" not in st.session_state):
+    st.selectbox(
+        "Quick sample: pick a source -> target pair (fills in docker-compose sample DB creds)",
+        [_PRESET_PLACEHOLDER, *_SAMPLE_PRESETS.keys()],
+        key="preset_choice",
+        on_change=_apply_preset,
+    )
+
     col1, col2 = st.columns(2)
     source_dialect = col1.selectbox("Source dialect", SUPPORTED_DIALECTS, key="source_dialect")
     target_dialect = col2.selectbox(
@@ -363,63 +405,141 @@ _PHASE_SECTIONS: list[tuple[str, str, Any]] = [
     ("deployment", "🚀 Deployment", _render_deployment),
 ]
 
+# Orchestrator phase names (orchestrator/graph.py) -> the _PHASE_SECTIONS field
+# they belong to, so the active tab can show a "currently running" banner.
+_PHASE_NAME_TO_FIELD = {
+    "Discover": "discovery",
+    "Analyse": "discovery",
+    "Plan": "plan",
+    "HumanReviewPlan": "plan",
+    "Transform": "schema_translation",
+    "Generate": "schema_translation",
+    "CodeRefactor": "schema_translation",
+    "DataMigrate": "data_migration",
+    "Validate": "validation",
+    "HumanReviewValidation": "validation",
+    "Test": "test_report",
+    "HumanReviewCutover": "test_report",
+    "Cutover": "deployment",
+    "Verify": "deployment",
+}
+
 st.divider()
 st.subheader("Pipeline Progress")
-for field, label, renderer in _PHASE_SECTIONS:
-    data = job.get(field)
-    with st.expander(label, expanded=bool(data) and field in {"validation", "plan"}):
+
+active_field = _PHASE_NAME_TO_FIELD.get(job.get("current_phase", ""))
+is_job_active = job["status"] not in {"DONE", "ABORTED", "ROLLED_BACK"}
+
+tab_labels = [label for _, label, _ in _PHASE_SECTIONS] + [
+    "🧬 Schema SQL Compare",
+    "👤 Review",
+    "🕘 History",
+]
+tabs = st.tabs(tab_labels)
+
+for tab, (field, label, renderer) in zip(tabs, _PHASE_SECTIONS):
+    with tab:
+        data = job.get(field)
+        if is_job_active and field == active_field:
+            st.info(f"▶ Currently running: {job['current_phase']}")
         if data:
             renderer(data)
         else:
             st.caption("Not reached yet.")
 
-retry_history = job.get("retry_history", [])
-if retry_history:
-    st.divider()
-    st.write("**Retry history**")
-    st.table(retry_history)
+schema_tab, review_tab, history_tab = tabs[-3], tabs[-2], tabs[-1]
 
-if job["approvals"]:
-    st.write("**Approval history**")
-    st.table(job["approvals"])
-
-
-interrupt = job.get("interrupt")
-if interrupt:
-    st.divider()
-    st.subheader(f"Review required: {interrupt.get('phase', interrupt.get('type', 'unknown'))}")
-    st.write(interrupt.get("prompt", ""))
-
-    plan = interrupt.get("plan")
-    if interrupt.get("type") == "HumanReviewPlan" and plan:
-        _render_plan_summary(plan)
-        with st.expander("Raw plan JSON"):
-            st.json(plan)
-    else:
-        with st.expander("Details", expanded=True):
-            st.json({k: v for k, v in interrupt.items() if k not in {"prompt", "phase", "type"}})
-
-    reviewer = st.text_input("Reviewer name")
-    comment = st.text_area("Comment (optional)")
-    decision_options = (
-        ["retry", "abort"]
-        if interrupt.get("type") == "HumanReviewFailure"
-        else ["approve", "modify", "reject"]
+with schema_tab:
+    st.caption(
+        "Live introspection of the ENTIRE source and target databases (every "
+        "table/view/procedure/function/trigger, not just migrated objects) — "
+        "can be run anytime while the job's connections are still live."
     )
-    cols = st.columns(len(decision_options))
-    for col, decision in zip(cols, decision_options):
-        if col.button(decision.capitalize(), disabled=not reviewer):
-            try:
-                _submit_review(job_id, decision, reviewer, comment)
-                st.success(f"Submitted decision: {decision}")
-                time.sleep(1)
-                st.rerun()
-            except requests.RequestException as exc:
-                st.error(f"Failed to submit review: {exc}")
-    if not reviewer:
-        st.caption("Enter a reviewer name to enable the decision buttons.")
-else:
-    st.caption("No review currently pending for this job.")
+    if st.button("Fetch schema.sql for source & target", key="fetch_schema_sql"):
+        try:
+            st.session_state["schema_sql"] = _get_schema_sql(job_id)
+        except requests.HTTPError as exc:
+            detail = exc.response.json().get("detail", str(exc)) if exc.response is not None else str(exc)
+            st.error(f"Failed to fetch schema.sql: {detail}")
+        except requests.RequestException as exc:
+            st.error(f"Failed to fetch schema.sql: {exc}")
+
+    schema_sql = st.session_state.get("schema_sql")
+    if schema_sql:
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown(f"**Source schema.sql** ({schema_sql['source_dialect']})")
+            st.download_button(
+                "Download source schema.sql",
+                schema_sql["source_schema_sql"],
+                file_name=f"source_{schema_sql['source_dialect']}_schema.sql",
+                mime="text/plain",
+                key="dl_source_schema",
+            )
+            st.code(schema_sql["source_schema_sql"], language="sql")
+        with col2:
+            st.markdown(f"**Target schema.sql** ({schema_sql['target_dialect']})")
+            st.download_button(
+                "Download target schema.sql",
+                schema_sql["target_schema_sql"],
+                file_name=f"target_{schema_sql['target_dialect']}_schema.sql",
+                mime="text/plain",
+                key="dl_target_schema",
+            )
+            st.code(schema_sql["target_schema_sql"], language="sql")
+    else:
+        st.info("Click the button above to fetch and compare the full source/target schema.sql.")
+
+with history_tab:
+    retry_history = job.get("retry_history", [])
+    if retry_history:
+        st.write("**Retry history**")
+        st.table(retry_history)
+    else:
+        st.caption("No retries yet.")
+
+    if job["approvals"]:
+        st.write("**Approval history**")
+        st.table(job["approvals"])
+    else:
+        st.caption("No approvals yet.")
+
+with review_tab:
+    interrupt = job.get("interrupt")
+    if interrupt:
+        st.subheader(f"Review required: {interrupt.get('phase', interrupt.get('type', 'unknown'))}")
+        st.write(interrupt.get("prompt", ""))
+
+        plan = interrupt.get("plan")
+        if interrupt.get("type") == "HumanReviewPlan" and plan:
+            _render_plan_summary(plan)
+            with st.expander("Raw plan JSON"):
+                st.json(plan)
+        else:
+            with st.expander("Details", expanded=True):
+                st.json({k: v for k, v in interrupt.items() if k not in {"prompt", "phase", "type"}})
+
+        reviewer = st.text_input("Reviewer name")
+        comment = st.text_area("Comment (optional)")
+        decision_options = (
+            ["retry", "abort"]
+            if interrupt.get("type") == "HumanReviewFailure"
+            else ["approve", "modify", "reject"]
+        )
+        cols = st.columns(len(decision_options))
+        for col, decision in zip(cols, decision_options):
+            if col.button(decision.capitalize(), disabled=not reviewer):
+                try:
+                    _submit_review(job_id, decision, reviewer, comment)
+                    st.success(f"Submitted decision: {decision}")
+                    time.sleep(1)
+                    st.rerun()
+                except requests.RequestException as exc:
+                    st.error(f"Failed to submit review: {exc}")
+        if not reviewer:
+            st.caption("Enter a reviewer name to enable the decision buttons.")
+    else:
+        st.caption("No review currently pending for this job.")
 
 if st.button("Refresh"):
     st.rerun()
