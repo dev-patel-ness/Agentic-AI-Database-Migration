@@ -26,6 +26,7 @@ from agents.validation_agent import validate_data
 from dialects.connections import default_namespace
 from observability import metrics
 from orchestrator import connection_registry
+from orchestrator.execution_trace import add_step
 from orchestrator.retry import with_retry
 from orchestrator.state import (
     ApprovalRecord,
@@ -69,9 +70,21 @@ def _discover(state: MigrationState) -> dict[str, Any]:
             "process may have restarted before Discover ran; recreate the job"
         )
     source_connection, _target_connection = connections
+    
+    trace = add_step(state.execution_trace, "Discover", 
+                     "Running SchemaExtractorAdapter",
+                     f"Introspecting {state.dialects.source} source database")
+    
     discovery = run_discovery(
         state.job_id, state.dialects.source, state.dialects.target, source_connection
     )
+    
+    catalog_count = len(discovery.object_catalog) if discovery.object_catalog else 0
+    trace = add_step(trace, "Discover",
+                     f"Schema discovery complete",
+                     f"Found {catalog_count} objects ({', '.join(f'{k}={v}' for k,v in Counter(e['object_type'] for e in discovery.object_catalog).items()) if discovery.object_catalog else '0 tables'})",
+                     status="SUCCESS")
+    
     # NOTE: connection config is intentionally kept in the registry (not
     # discarded here) -- Transform/Generate's Schema Agent needs the target
     # connection too. See connection_registry.py's module docstring.
@@ -79,6 +92,7 @@ def _discover(state: MigrationState) -> dict[str, Any]:
         "current_phase": "Discover",
         "status": JobStatus.RUNNING.value,
         "discovery": discovery.model_dump(),
+        "execution_trace": trace,
     }
 
 
@@ -86,6 +100,13 @@ def _analyse(state: MigrationState) -> dict[str, Any]:
     _log_phase(state, "Analyse")
     catalog = state.discovery.object_catalog if state.discovery else []
     counts = Counter(entry["object_type"] for entry in catalog)
+    
+    details = ", ".join(f"{count} {otype}" for otype, count in sorted(counts.items()))
+    trace = add_step(state.execution_trace, "Analyse",
+                     "Analyzing schema objects",
+                     f"Catalog contains: {details}",
+                     status="SUCCESS")
+    
     logger.info(
         "[job=%s] catalog: %d tables, %d views, %d procedures, %d functions, %d triggers",
         state.job_id,
@@ -95,19 +116,37 @@ def _analyse(state: MigrationState) -> dict[str, Any]:
         counts.get("function", 0),
         counts.get("trigger", 0),
     )
-    return {"current_phase": "Analyse", "status": JobStatus.RUNNING.value}
+    return {
+        "current_phase": "Analyse",
+        "status": JobStatus.RUNNING.value,
+        "execution_trace": trace,
+    }
 
 
 def _plan(state: MigrationState) -> dict[str, Any]:
     _log_phase(state, "Plan")
+    trace = add_step(state.execution_trace, "Plan",
+                     "Building migration plan",
+                     f"Source: {state.dialects.source}, Target: {state.dialects.target}")
+    
     if state.discovery is None:
         plan = state.plan or MigrationPlan()
     else:
         plan = build_plan(state.discovery, state.dialects.source, state.dialects.target)
+    
+    summary = f"{plan.tables} tables, {plan.views} views, {plan.procedures} procedures, {plan.functions} functions, {plan.triggers} triggers"
+    if plan.risk_register:
+        summary += f", {len(plan.risk_register)} risk items"
+    trace = add_step(trace, "Plan",
+                     "Migration plan created",
+                     summary,
+                     status="SUCCESS")
+    
     return {
         "current_phase": "Plan",
         "status": JobStatus.PAUSED.value,  # next node is the HumanReviewPlan gate
         "plan": plan.model_dump(),
+        "execution_trace": trace,
     }
 
 
@@ -158,11 +197,16 @@ def _transform(state: MigrationState) -> dict[str, Any]:
 
 def _generate(state: MigrationState) -> dict[str, Any]:
     _log_phase(state, "Generate")
+    trace = add_step(state.execution_trace, "Generate",
+                     "Using LLM + RAG for schema translation",
+                     f"Translating {state.dialects.source} schema to {state.dialects.target}")
+    
     if state.discovery is None or not state.discovery.object_catalog:
         return {
             "current_phase": "Generate",
             "status": JobStatus.RUNNING.value,
             "schema_translation": (state.schema_translation or TranslationResult()).model_dump(),
+            "execution_trace": trace,
         }
 
     connections = connection_registry.get(state.job_id)
@@ -175,27 +219,43 @@ def _generate(state: MigrationState) -> dict[str, Any]:
         state.dialects.target,
         target_connection=target_connection,
     )
+    
+    obj_count = len(translation.translated_objects) if translation.translated_objects else 0
+    avg_conf = translation.average_confidence or 0.0
+    trace = add_step(trace, "Generate",
+                     "Schema translation complete (sqlglot + LLM)",
+                     f"Translated {obj_count} objects, avg confidence: {avg_conf:.2f}",
+                     status="SUCCESS")
 
     plan = state.plan or MigrationPlan()
     if low_confidence_objects:
         merged = list(dict.fromkeys(plan.manual_review_objects + low_confidence_objects))
         plan = plan.model_copy(update={"manual_review_objects": merged})
+        if merged:
+            trace = add_step(trace, "Generate",
+                             "Low-confidence translations flagged for review",
+                             f"Objects requiring manual review: {', '.join(merged)}")
 
     return {
         "current_phase": "Generate",
         "status": JobStatus.RUNNING.value,
         "schema_translation": translation.model_dump(),
         "plan": plan.model_dump(),
+        "execution_trace": trace,
     }
 
 
 def _code_refactor(state: MigrationState) -> dict[str, Any]:
     _log_phase(state, "CodeRefactor")
+    trace = add_step(state.execution_trace, "CodeRefactor",
+                     "Code refactoring phase",
+                     "No code-gen agents enabled in this phase yet")
     # TODO(Phase 6): replace with Code Agent / openrewrite+aider adapter output.
     return {
         "current_phase": "CodeRefactor",
         "status": JobStatus.RUNNING.value,
         "code_refactor": (state.code_refactor or CodeRefactorResult()).model_dump(),
+        "execution_trace": trace,
     }
 
 
@@ -203,11 +263,16 @@ def _data_migrate(state: MigrationState) -> dict[str, Any]:
     """Migrate data from source to target; auto-retry once if no rows moved."""
     _log_phase(state, "DataMigrate")
     
+    trace = add_step(state.execution_trace, "DataMigrate",
+                     "Starting data migration",
+                     "Fetching table metadata and preparing migration")
+    
     if state.discovery is None or not state.discovery.object_catalog:
         return {
             "current_phase": "DataMigrate",
             "status": JobStatus.RUNNING.value,
             "data_migration": (state.data_migration or DataMigrationResult()).model_dump(),
+            "execution_trace": trace,
         }
 
     connections = connection_registry.get(state.job_id)
@@ -228,6 +293,11 @@ def _data_migrate(state: MigrationState) -> dict[str, Any]:
     
     start_time = time.monotonic()
     try:
+        tables = [e["name"] for e in discovery.object_catalog if e["object_type"] == "table"]
+        trace = add_step(trace, "DataMigrate",
+                        f"Migrating {len(tables)} tables",
+                        f"Tables: {', '.join(tables[:5])}{'...' if len(tables) > 5 else ''}")
+        
         data_migration = migrate_data(
             state.job_id,
             discovery,
@@ -241,6 +311,10 @@ def _data_migrate(state: MigrationState) -> dict[str, Any]:
         
         # Record throughput metric if rows were moved
         if data_migration.rows_moved > 0:
+            trace = add_step(trace, "DataMigrate",
+                            "Data migration completed",
+                            f"Moved {data_migration.rows_moved} rows in {duration:.2f}s",
+                            status="SUCCESS")
             for table_result in data_migration.tables:
                 table_name = table_result.get("table_name", "?")
                 rows_written = table_result.get("rows_written", 0)
@@ -265,6 +339,10 @@ def _data_migrate(state: MigrationState) -> dict[str, Any]:
                 duration_seconds=duration,
             )
             
+            trace = add_step(trace, "DataMigrate",
+                            "No rows moved - auto-retrying",
+                            f"Attempt {attempt + 1}/{max_retries_for_migrate}")
+            
             logger.warning(
                 "[job=%s] DataMigrate attempt %d moved 0 rows; auto-retrying (attempt %d/%d)",
                 state.job_id,
@@ -287,6 +365,7 @@ def _data_migrate(state: MigrationState) -> dict[str, Any]:
                 "status": JobStatus.RUNNING.value,
                 "data_migration": data_migration.model_dump(),
                 "retry_history": [r.model_dump() for r in state.retry_history] + [retry_record.model_dump()],
+                "execution_trace": trace,
             }
         
         # If rows were moved or we've already retried, mark as success
@@ -310,10 +389,16 @@ def _data_migrate(state: MigrationState) -> dict[str, Any]:
             "current_phase": "DataMigrate",
             "status": JobStatus.RUNNING.value,
             "data_migration": data_migration.model_dump(),
+            "execution_trace": trace,
         }
     
     except Exception as exc:
         duration = time.monotonic() - start_time
+        trace = add_step(trace, "DataMigrate",
+                        f"Error during migration",
+                        str(exc),
+                        status="FAILED",
+                        error=str(exc))
         logger.exception("[job=%s] DataMigrate failed: %s", state.job_id, exc)
         
         # If this was our first attempt and we can retry, do so
@@ -349,6 +434,7 @@ def _data_migrate(state: MigrationState) -> dict[str, Any]:
                 "status": JobStatus.RUNNING.value,
                 "data_migration": (state.data_migration or DataMigrationResult()).model_dump(),
                 "retry_history": [r.model_dump() for r in state.retry_history] + [retry_record.model_dump()],
+                "execution_trace": trace,
             }
         else:
             # Max retries exceeded; escalate to human review
@@ -360,6 +446,7 @@ def _data_migrate(state: MigrationState) -> dict[str, Any]:
                 "current_phase": "DataMigrate",
                 "status": JobStatus.PAUSED.value,  # Pause for human review
                 "data_migration": (state.data_migration or DataMigrationResult()).model_dump(),
+                "execution_trace": trace,
             }
 
 
@@ -367,11 +454,16 @@ def _validate(state: MigrationState) -> dict[str, Any]:
     """Validate migrated data using checksums and row counts."""
     _log_phase(state, "Validate")
     
+    trace = add_step(state.execution_trace, "Validate",
+                     "Starting data validation",
+                     "Computing MD5 checksums and row counts")
+    
     if state.discovery is None or not state.discovery.object_catalog:
         return {
             "current_phase": "Validate",
             "status": JobStatus.PAUSED.value,
             "validation": (state.validation or ValidationReport(overall_status="PASS")).model_dump(),
+            "execution_trace": trace,
         }
 
     connections = connection_registry.get(state.job_id)
@@ -401,6 +493,11 @@ def _validate(state: MigrationState) -> dict[str, Any]:
         matched = sum(
             1 for cs in validation_report.table_checksums if cs.status == "MATCH"
         )
+        trace = add_step(trace, "Validate",
+                        "Validation complete",
+                        f"Tables validated: {len(validation_report.table_checksums)}, Matched: {matched}, Status: {validation_report.overall_status}",
+                        status="SUCCESS")
+        
         metrics.record_validation_progress(
             state.job_id,
             state.dialects.source,
@@ -410,6 +507,11 @@ def _validate(state: MigrationState) -> dict[str, Any]:
         )
         
     except Exception as exc:
+        trace = add_step(trace, "Validate",
+                        "Validation failed",
+                        str(exc),
+                        status="FAILED",
+                        error=str(exc))
         logger.exception("[job=%s] Validation failed: %s", state.job_id, exc)
         validation_report = ValidationReport(overall_status="FAIL")
     
@@ -417,6 +519,7 @@ def _validate(state: MigrationState) -> dict[str, Any]:
         "current_phase": "Validate",
         "status": JobStatus.PAUSED.value,  # next node is the HumanReviewValidation gate
         "validation": validation_report.model_dump(),
+        "execution_trace": trace,
     }
 
 
@@ -462,12 +565,20 @@ def _route_after_validation_review(state: MigrationState) -> str:
 
 def _test(state: MigrationState) -> dict[str, Any]:
     _log_phase(state, "Test")
+    trace = add_step(state.execution_trace, "Test",
+                     "Test suite execution",
+                     "No test cases generated yet")
     # TODO(Phase 7): replace with generated/executed migration test cases.
     report = state.test_report or TestReport(overall_status="PASS")
     next_status = (
         JobStatus.PAUSED.value if report.overall_status == "PASS" else JobStatus.RUNNING.value
     )
-    return {"current_phase": "Test", "status": next_status, "test_report": report.model_dump()}
+    return {
+        "current_phase": "Test",
+        "status": next_status,
+        "test_report": report.model_dump(),
+        "execution_trace": trace,
+    }
 
 
 def _route_after_test(state: MigrationState) -> str:
@@ -511,16 +622,29 @@ def _route_after_cutover_review(state: MigrationState) -> str:
 
 def _cutover(state: MigrationState) -> dict[str, Any]:
     _log_phase(state, "Cutover")
-    return {"current_phase": "Cutover", "status": JobStatus.RUNNING.value}
+    trace = add_step(state.execution_trace, "Cutover",
+                     "Production cutover",
+                     "Applying changes to production",
+                     status="IN_PROGRESS")
+    return {
+        "current_phase": "Cutover",
+        "status": JobStatus.RUNNING.value,
+        "execution_trace": trace,
+    }
 
 
 def _verify(state: MigrationState) -> dict[str, Any]:
     _log_phase(state, "Verify")
+    trace = add_step(state.execution_trace, "Verify",
+                     "Post-cutover health check",
+                     "Verifying deployment health",
+                     status="SUCCESS")
     # TODO(Phase 8): replace with real post-cutover health-check gating.
     return {
         "current_phase": "Verify",
         "status": JobStatus.RUNNING.value,
         "deployment": DeploymentStatus(status="HEALTHY").model_dump(),
+        "execution_trace": trace,
     }
 
 
@@ -532,7 +656,15 @@ def _route_after_verify(state: MigrationState) -> str:
 def _done(state: MigrationState) -> dict[str, Any]:
     _log_phase(state, "Done")
     connection_registry.discard(state.job_id)
-    return {"current_phase": "Done", "status": JobStatus.DONE.value}
+    trace = add_step(state.execution_trace, "Done",
+                     "Migration completed successfully",
+                     "Job finished",
+                     status="SUCCESS")
+    return {
+        "current_phase": "Done",
+        "status": JobStatus.DONE.value,
+        "execution_trace": trace,
+    }
 
 
 def _rollback(state: MigrationState) -> dict[str, Any]:

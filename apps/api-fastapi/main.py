@@ -119,6 +119,7 @@ class JobStatusResponse(BaseModel):
     retry_count: int
     approvals: list[dict[str, Any]]
     retry_history: list[dict[str, Any]]
+    execution_trace: list[dict[str, Any]]  # Detailed execution steps for UI observability
     discovery: Optional[dict[str, Any]] = None
     plan: Optional[dict[str, Any]] = None
     schema_translation: Optional[dict[str, Any]] = None

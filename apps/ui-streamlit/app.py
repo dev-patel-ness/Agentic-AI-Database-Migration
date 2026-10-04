@@ -392,6 +392,83 @@ def _render_deployment(deployment: dict[str, Any]) -> None:
         st.caption(deployment["detail"])
 
 
+def _render_execution_trace(trace: list[dict[str, Any]]) -> None:
+    """Display detailed execution steps in a timeline format."""
+    if not trace:
+        st.info("No execution steps recorded yet.")
+        return
+
+    # Group steps by phase
+    by_phase = {}
+    for step in trace:
+        phase = step.get("phase", "Unknown")
+        if phase not in by_phase:
+            by_phase[phase] = []
+        by_phase[phase].append(step)
+
+    # Display each phase's steps
+    for phase in by_phase.keys():
+        with st.expander(f"📍 **{phase}**", expanded=False):
+            steps = by_phase[phase]
+            for i, step in enumerate(steps, 1):
+                # Determine status icon
+                status = step.get("status", "SUCCESS")
+                status_icon = "✅" if status == "SUCCESS" else "⏳" if status == "IN_PROGRESS" else "❌"
+
+                # Display step header
+                col1, col2, col3 = st.columns([1, 3, 2])
+                col1.write(f"{status_icon}")
+                col2.write(f"**{step.get('operation', 'Unknown operation')}**")
+
+                timestamp = step.get("timestamp")
+                if timestamp:
+                    col3.caption(timestamp.strftime("%H:%M:%S") if hasattr(timestamp, "strftime") else str(timestamp))
+
+                # Display details
+                if step.get("details"):
+                    st.caption(f"📝 {step['details']}")
+
+                # Display error if present
+                if step.get("error"):
+                    st.error(f"❌ Error: {step['error']}")
+
+                # Add spacing between steps
+                if i < len(steps):
+                    st.divider()
+
+
+def _render_phase_technical_details(job: dict[str, Any], phase_field: str | None) -> None:
+    """Show collapsible technical execution details for the current phase."""
+    trace = job.get("execution_trace", [])
+    if not trace or not phase_field:
+        return
+
+    # Filter trace to steps for this phase (based on phase field mapping)
+    phase_name_to_display = {
+        "discovery": ["Discover", "Analyse"],
+        "plan": ["Plan", "HumanReviewPlan"],
+        "schema_translation": ["Transform", "Generate", "CodeRefactor"],
+        "data_migration": ["DataMigrate"],
+        "validation": ["Validate", "HumanReviewValidation"],
+        "test_report": ["Test", "HumanReviewCutover"],
+        "deployment": ["Cutover", "Verify"],
+    }
+
+    phase_names = phase_name_to_display.get(phase_field, [])
+    phase_steps = [s for s in trace if s.get("phase") in phase_names]
+
+    if phase_steps:
+        with st.expander("🔧 Technical Details (what's being done behind the scenes)", expanded=False):
+            for step in phase_steps:
+                status = step.get("status", "SUCCESS")
+                status_icon = "✅" if status == "SUCCESS" else "⏳" if status == "IN_PROGRESS" else "❌"
+                st.write(f"{status_icon} **{step.get('operation', 'Unknown')}**")
+                if step.get("details"):
+                    st.caption(f"   {step['details']}")
+                if step.get("error"):
+                    st.error(f"   Error: {step['error']}")
+
+
 # Pipeline progress: every completed phase gets its own expander, populated
 # directly from the job state (not just whatever happens to ride along with
 # the current interrupt payload) so judges can see history after it's approved.
@@ -431,6 +508,7 @@ active_field = _PHASE_NAME_TO_FIELD.get(job.get("current_phase", ""))
 is_job_active = job["status"] not in {"DONE", "ABORTED", "ROLLED_BACK"}
 
 tab_labels = [label for _, label, _ in _PHASE_SECTIONS] + [
+    "📊 Execution Log",
     "🧬 Schema SQL Compare",
     "👤 Review",
     "🕘 History",
@@ -444,8 +522,24 @@ for tab, (field, label, renderer) in zip(tabs, _PHASE_SECTIONS):
             st.info(f"▶ Currently running: {job['current_phase']}")
         if data:
             renderer(data)
+            # Show technical details for this phase
+            _render_phase_technical_details(job, field)
         else:
             st.caption("Not reached yet.")
+
+# Add Execution Log tab (first after phase tabs)
+exec_log_tab = tabs[len(_PHASE_SECTIONS)]
+with exec_log_tab:
+    st.subheader("📊 Full Execution Timeline")
+    trace = job.get("execution_trace", [])
+    if trace:
+        st.caption(f"Total steps: {len(trace)}")
+        # Add refresh button for the trace
+        if st.button("🔄 Refresh trace", key="refresh_trace"):
+            st.rerun()
+        _render_execution_trace(trace)
+    else:
+        st.info("No execution steps recorded yet. Steps will appear here as the migration progresses.")
 
 schema_tab, review_tab, history_tab = tabs[-3], tabs[-2], tabs[-1]
 
