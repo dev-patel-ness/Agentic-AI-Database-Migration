@@ -1,0 +1,15 @@
+apiVersion: v2
+name: capstone-platform
+description: Helm chart for Agentic AI Database Migration Platform (ns-platform)
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+keywords:
+  - capstone
+  - migration
+  - platform
+  - database
+home: https://github.com/capstone/agentic-ai-db-migration
+maintainers:
+  - name: Capstone Team
+    email: capstone@example.com

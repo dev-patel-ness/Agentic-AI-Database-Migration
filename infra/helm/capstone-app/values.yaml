@@ -1,0 +1,216 @@
+# Default values for capstone-app Helm chart
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+namespace: ns-app
+
+# Deployment configurations
+replicaCount: 3
+
+# Streamlit UI image
+streamlitImage:
+  repository: capstone/ui-streamlit
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+# FastAPI Backend reference
+apiEndpoint: "http://capstone-platform:8000"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# Service Account for IRSA
+serviceAccount:
+  create: true
+  annotations:
+    eks.amazonaws.com/role-arn: ""  # Populated by Terraform output
+  name: "default"
+
+# Pod Annotations
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "8501"
+
+# Pod Security Context
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+# Container Security Context
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+  capabilities:
+    drop:
+      - ALL
+
+# Streamlit Service
+service:
+  type: ClusterIP
+  port: 8501
+  targetPort: 8501
+  annotations: {}
+
+# Ingress configuration (ALB)
+ingress:
+  enabled: true
+  className: alb
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: '443'
+    alb.ingress.kubernetes.io/certificate-arn: ""  # Set your ACM cert ARN
+  hosts:
+    - host: app.capstone.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# Resource limits and requests
+resources:
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+  requests:
+    cpu: 500m
+    memory: 512Mi
+
+# Autoscaling
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+# Node affinity for app workload
+affinity:
+  nodeAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: workload
+              operator: In
+              values:
+                - app
+  # Pod Anti-affinity to spread replicas across nodes
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - capstone-app
+          topologyKey: kubernetes.io/hostname
+
+# Tolerations
+tolerations: []
+
+# Liveness and Readiness probes
+livenessProbe:
+  httpGet:
+    path: /
+    port: 8501
+  initialDelaySeconds: 60
+  periodSeconds: 30
+  timeoutSeconds: 10
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /
+    port: 8501
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 2
+
+# Environment variables
+env:
+  - name: STREAMLIT_SERVER_PORT
+    value: "8501"
+  - name: STREAMLIT_SERVER_ADDRESS
+    value: "0.0.0.0"
+  - name: STREAMLIT_SERVER_HEADLESS
+    value: "true"
+  - name: API_ENDPOINT
+    value: "http://capstone-platform:8000"
+  - name: LOG_LEVEL
+    value: "INFO"
+
+# Secrets from Secrets Manager
+envFrom:
+  - secretRef:
+      name: db-credentials
+
+# ConfigMap
+configMap:
+  enabled: false
+
+# Persistent Volume
+persistence:
+  enabled: false
+
+# Deployment strategy
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 1
+    maxUnavailable: 1
+
+# Pod Disruption Budget
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+
+# Network Policy
+networkPolicy:
+  enabled: true
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: ns-platform
+      ports:
+        - protocol: TCP
+          port: 8501
+    - from:
+        - podSelector:
+            matchLabels:
+              k8s-app: aws-load-balancer-controller
+      ports:
+        - protocol: TCP
+          port: 8501
+  egress:
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 8000  # Platform API
+        - protocol: TCP
+          port: 5432  # PostgreSQL
+        - protocol: TCP
+          port: 3306  # MySQL
+        - protocol: TCP
+          port: 1521  # Oracle
+
+# Priority class
+priorityClassName: "default"
+
+# Init containers
+initContainers: []
+
+# Volumes
+volumes: []
