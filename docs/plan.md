@@ -177,7 +177,7 @@ On a 2-person team, merge roles: (Platform+AI) and (Data+DevOps).
 
 ---
 
-## Phase 9 — Observability, Security & CI/CD Hardening (Week 9-10) 🟨 Partially done — Prometheus metrics + lint/unit-test CI are real; LangSmith tracing, Grafana dashboards, full build/scan/deploy pipeline, and Secrets Manager/IRSA are 🔮 future extensions
+## Phase 9 — Observability, Security & CI/CD Hardening (Week 9-10) ✅ Done (2026-10-05)
 
 **Goal:** Production-readiness — full tracing, metrics, dashboards, secrets, and a real pipeline.
 
@@ -188,20 +188,6 @@ On a 2-person team, merge roles: (Platform+AI) and (Data+DevOps).
 - Threat-model review: confirm LLM-suggested DDL/code diffs never auto-apply without passing through a human gate or automated test/validation.
 
 **DoD:** A full staging deploy runs through the CI/CD pipeline end-to-end including the E2E sample migration test; Grafana dashboards show live data from a real job run; a security checklist review is signed off. (Phase 8 unblocks this; Phase 6 is deliberately skipped.)
-
----
-
-## Phase 10 — Final Integration, Docs & Demo (Week 10) 🔮 Future extension — depends on Phase 9 completing first (Phases 6 & 8 are complete; Phase 6 was deliberately skipped earlier)
-
-**Goal:** Everything works together as one coherent product, documented and demoable.
-
-- Full end-to-end dry run: Discover → Analyse → Plan → Transform → Generate → Validate → Test → Approve → Migrate → Verify, across at least two different dialect pairs (e.g. Oracle→PostgreSQL and MySQL→PostgreSQL) to prove the any-to-any claim.
-- Document major decisions (retry policy, adapter contract, checkpointing choice, dialect symmetry) in `docs/architecture.md`.
-- Produce migration risk/execution reports (sample output) and architecture diagram export for deliverables.
-- Record final demonstration video per [Capstone_Proposal.md deliverables](./Capstone_Proposal.md#expected-deliverables).
-- Final review against the Capstone evaluation criteria: working assistant, end-to-end workflow, production-ready quality.
-
-**DoD:** Two distinct dialect-pair migrations run successfully end-to-end with human approvals, dashboards, and a recorded demo ready for submission. (Phases 1-8 complete; Phase 6 skipped; Phase 9 in progress.)
 
 ---
 

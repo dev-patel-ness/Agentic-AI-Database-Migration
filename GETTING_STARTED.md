@@ -124,11 +124,11 @@ pre-commit run --all-files
 poetry run pytest tests/unit/ -v
 ```
 
-All unit tests should pass. If you also want to confirm the live pipeline works end-to-end against the sample databases (Phases 2-5), run:
+All unit tests should pass. If you also want to confirm the live pipeline works end-to-end against the sample databases, run:
 
 ```bash
-poetry run python scripts/_phase4_e2e.py   # schema discovery + CrackSQL translation
-poetry run python scripts/_phase5_e2e.py   # + SeaTunnel data migration + DDL apply
+poetry run pytest tests/integration/ -v   # schema discovery + knowledge base + checkpointer
+poetry run pytest tests/e2e/ -v -s        # full Discover -> Migrate -> Verify workflow
 ```
 
 ---

@@ -206,18 +206,19 @@ poetry run isort .
 
 #### FastAPI Server
 
-**Option 1: With automatic destination database cleanup (recommended)**
+**Option 1: With automatic destination database cleanup (recommended, Windows/PowerShell only)**
 
-Before each job, the destination database is automatically truncated to ensure a clean migration:
+Resets all 3 sample DBs to a clean baseline before starting the API:
 
 ```powershell
 # PowerShell on Windows
 .\scripts\Start-API-Clean.ps1
 ```
 
+On Linux/macOS, reset the sample databases manually before starting the API, e.g.:
+
 ```bash
-# Bash/Linux/macOS
-poetry run python scripts/start_api_clean.py
+docker compose down -v && docker compose up -d
 ```
 
 **Option 2: Manual startup without cleanup**
