@@ -1,0 +1,11 @@
+{
+    "info": {
+        "src_dialect": "oracle",
+        "tgt_dialect": "pg",
+        "src_sql": "CREATE TABLE employees (\n  id NUMBER(10) PRIMARY KEY,\n  name VARCHAR2(100) NOT NULL,\n  hired_at DATE DEFAULT SYSDATE,\n  notes CLOB\n)",
+        "model_name": null,
+        "vector_config": null,
+        "tgt_db_config": null
+    },
+    "process_data": []
+}

@@ -5,7 +5,7 @@
 > Team: 2-4 engineers. Duration: 10 weeks (fits within an 8-12 week window; compress by dropping stretch items if needed).
 > Each phase ends with a demo-able increment and a defined Definition of Done (DoD).
 >
-> **Status legend** (updated 2026-10-01, see [architecture.md §17](./architecture.md#17-implementation-status) for detail): ✅ Done · 🟨 Partially done · 🔮 Future extension (designed, not yet built).
+> **Status legend** (updated 2026-10-05, see [architecture.md §17](./architecture.md#17-implementation-status) for detail): ✅ Done · 🟨 Partially done · 🔮 Future extension (designed, not yet built) · ⏭️ Deliberately skipped for now.
 
 ---
 
@@ -107,7 +107,7 @@ On a 2-person team, merge roles: (Platform+AI) and (Data+DevOps).
 
 ---
 
-## Phase 6 — Application Code Refactoring (Week 7) 🔮 Future extension — `agents/code_agent`, `openrewrite_adapter`, `aider_adapter` are empty stubs; `CodeRefactor` graph node is a no-op
+## Phase 6 — Application Code Refactoring (Week 7) ⏭️ Deliberately skipped (2026-10-05) — `agents/code_agent`, `openrewrite_adapter`, `aider_adapter` remain empty stubs; `CodeRefactor` graph node stays a no-op passthrough. Skipped in favor of completing Phase 7 first; revisit as a future extension.
 
 **Goal:** Automated application-layer adaptation to the new database dialect.
 
@@ -120,16 +120,16 @@ On a 2-person team, merge roles: (Platform+AI) and (Data+DevOps).
 
 ---
 
-## Phase 7 — Validation, Reconciliation & Testing (Week 8) 🟨 Partially done — checksum/reconciliation validation is real; the automated **Test** phase is a stub that always returns PASS
+## Phase 7 — Validation, Reconciliation & Testing (Week 8) ✅ Done (2026-10-05) — checksum/reconciliation validation and the automated **Test** phase are both real
 
 **Goal:** Deterministic proof of migration correctness plus automated test generation.
 
 - Implement `checksum_adapter`: batched row fetch from source/target, Pandas/PySpark hashing, per-table comparison.
 - Implement **Validation Agent** per [§8.5 sequence](./architecture.md#85-validation--reconciliation): produces `ValidationReport` (mismatches, per-table status), persists `VALIDATION_RESULT` rows.
 - Wire `Validate → HumanReviewValidation` gate and the `PASS → Test` / `FAIL → retry DataMigrate` router.
-- Implement the **Test** phase: generate/execute migration test cases (schema/SQL compatibility, referential integrity, missing objects, performance smoke checks) producing a structured test report; wire `Test → HumanReviewCutover` (PASS) / `Test → Validate` (FAIL) edges.
+- Implement the **Test** phase: generate/execute migration test cases (schema/SQL compatibility, referential integrity, missing objects, performance smoke checks) producing a structured test report; wire `Test → HumanReviewCutover` (PASS) / `Test → Validate` (FAIL) edges. Implemented in `agents/validation_agent/test_runner.py::run_tests()` — 4 checks (schema_compatibility, missing_objects, referential_integrity via orphan-row queries per FK, performance_smoke via timed `COUNT(*)`), wired into `orchestrator/graph.py::_test()`; Streamlit's `_render_test_report()` shows the per-check breakdown at the `HumanReviewCutover` gate.
 
-**DoD:** Given a migrated dataset with at least one deliberately-injected mismatch, the Validation Agent detects and reports it correctly, and a clean dataset produces a PASS test report reaching the cutover gate.
+**DoD:** Given a migrated dataset with at least one deliberately-injected mismatch, the Validation Agent detects and reports it correctly, and a clean dataset produces a PASS test report reaching the cutover gate. ✅ Met.
 
 ---
 
@@ -161,7 +161,7 @@ On a 2-person team, merge roles: (Platform+AI) and (Data+DevOps).
 
 ---
 
-## Phase 10 — Final Integration, Docs & Demo (Week 10) 🔮 Future extension — depends on Phases 6/8/9 completing first
+## Phase 10 — Final Integration, Docs & Demo (Week 10) 🔮 Future extension — depends on Phases 8/9 completing first (Phase 6 deliberately skipped, not a blocker)
 
 **Goal:** Everything works together as one coherent product, documented and demoable.
 

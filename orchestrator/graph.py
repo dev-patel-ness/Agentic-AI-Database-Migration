@@ -23,6 +23,7 @@ from agents.data_agent import migrate_data
 from agents.planner_agent import build_plan
 from agents.schema_agent import translate_schema
 from agents.validation_agent import validate_data
+from agents.validation_agent.test_runner import run_tests
 from dialects.connections import default_namespace
 from observability import metrics
 from orchestrator import connection_registry
@@ -564,12 +565,53 @@ def _route_after_validation_review(state: MigrationState) -> str:
 
 
 def _test(state: MigrationState) -> dict[str, Any]:
+    """Run schema-compatibility, missing-objects, referential-integrity, and
+    performance smoke checks against the target, producing a TestReport."""
     _log_phase(state, "Test")
     trace = add_step(state.execution_trace, "Test",
-                     "Test suite execution",
-                     "No test cases generated yet")
-    # TODO(Phase 7): replace with generated/executed migration test cases.
-    report = state.test_report or TestReport(overall_status="PASS")
+                     "Running migration test suite",
+                     "Schema compatibility, missing objects, referential integrity, performance smoke checks")
+
+    if state.discovery is None or not state.discovery.object_catalog or state.validation is None:
+        report = TestReport(overall_status="PASS")
+        return {
+            "current_phase": "Test",
+            "status": JobStatus.PAUSED.value,
+            "test_report": report.model_dump(),
+            "execution_trace": trace,
+        }
+
+    connections = connection_registry.get(state.job_id)
+    if connections is None:
+        raise RuntimeError(
+            f"no registered connection config for job {state.job_id} — the API "
+            "process may have restarted; recreate the job"
+        )
+    _source_connection, target_connection = connections
+    discovery = DiscoveryResult(**state.discovery.model_dump())
+    validation = ValidationReport(**state.validation.model_dump())
+
+    try:
+        report = run_tests(
+            state.job_id,
+            discovery,
+            validation,
+            state.dialects.target,
+            target_connection,
+            default_namespace(state.dialects.target, target_connection),
+        )
+        trace = add_step(trace, "Test",
+                         "Test suite complete",
+                         ", ".join(f"{d['check']}={d['status']}" for d in report.details),
+                         status="SUCCESS" if report.overall_status == "PASS" else "FAILED")
+    except Exception as exc:
+        trace = add_step(trace, "Test", "Test suite failed", str(exc), status="FAILED", error=str(exc))
+        logger.exception("[job=%s] Test phase failed: %s", state.job_id, exc)
+        report = TestReport(
+            overall_status="FAIL",
+            details=[{"check": "test_suite", "status": "ERROR", "detail": str(exc)}],
+        )
+
     next_status = (
         JobStatus.PAUSED.value if report.overall_status == "PASS" else JobStatus.RUNNING.value
     )

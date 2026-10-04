@@ -99,7 +99,7 @@ Required once, before any schema translation (Phase 4) will work:
 poetry run python scripts/init_cracksql_kb.py
 ```
 
-Safe to re-run (idempotent).
+Safe to re-run (idempotent). If it reports `Knowledge base initialization completed: 0/3 successful`, see the Troubleshooting table below (`EMBEDDING_MODELS`/`KNOWLEDGE_BASES` config mismatch in `init_config.yaml`).
 
 ## 8. Build the SeaTunnel Docker Image
 
@@ -200,6 +200,7 @@ docker-compose down -v       # stop and wipe all volumes (fresh sample data next
 | `poetry install` fails building `oracledb`/`psycopg2`/`pyspark` (MSVC error) | Wrong Python version — `poetry env remove --all`, `poetry env use py -3.12`, retry (step 2). |
 | `poetry install` fails with a "directory does not exist" error for `cracksql` | Run step 3 (`build_editable.py`) first. |
 | `poetry install` fails with a lock-file/content-hash error | `poetry lock --no-update`, then retry. |
+| `scripts/init_cracksql_kb.py` reports `0/3 successful`, or hybrid translation (Phase 4) logs embedding `Missing credentials`/`Could not connect to the endpoint URL` | Stale CrackSQL config/DB. In `tool_adapters/cracksql_adapter/vendor/CrackSQL/backend/config/init_config.yaml`, the `EMBEDDING_MODELS` entry's `deployment_type` must be `"bedrock"` (not `"cloud"`) with `api_base` set to a real AWS region, and every `KNOWLEDGE_BASES[*].embedding_model` must match the Bedrock model name (`amazon.titan-embed-text-v2:0`, not `text-embedding-ada-002`). Delete `tool_adapters/cracksql_adapter/instance/info.db` and re-run step 7. |
 | Oracle container never becomes healthy | Normal on first run (5-10 min). Check `docker-compose logs oracle-sample`. |
 | SeaTunnel job can't reach a sample DB container | Job configs run inside the SeaTunnel container, so `localhost` there isn't the host — already configured to use `host.docker.internal` via `extra_hosts` in `docker-compose.yml`. |
 | `AUTH_API_KEY` warning at API startup | Expected in local dev (auth disabled). Set `AUTH_API_KEY` in `.env` before exposing the API beyond localhost. |

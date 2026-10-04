@@ -379,11 +379,25 @@ def _render_validation(validation_report: dict[str, Any]) -> None:
 
 
 def _render_test_report(test_report: dict[str, Any]) -> None:
-    st.write(f"**Overall test status:** {test_report.get('overall_status', 'PENDING')}")
     details = test_report.get("details") or []
+    passed = sum(1 for d in details if d.get("status") == "PASS")
     if details:
-        with st.expander(f"Test details ({len(details)})"):
-            st.dataframe(details, use_container_width=True, hide_index=True)
+        st.metric("Test checks", f"{passed}/{len(details)} passed")
+
+    for item in details:
+        check = item.get("check", "check")
+        status = item.get("status", "PENDING")
+        detail = item.get("detail", "")
+        label = check.replace("_", " ").title()
+        if status == "PASS":
+            st.success(f"✅ {label}: {detail}")
+        elif status == "ERROR":
+            st.warning(f"⚠️ {label}: {detail}")
+        else:
+            st.error(f"❌ {label}: {detail}")
+
+    overall_status = test_report.get("overall_status", "PENDING")
+    st.write(f"**Overall test status:** {overall_status}")
 
 
 def _render_deployment(deployment: dict[str, Any]) -> None:

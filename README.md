@@ -12,8 +12,8 @@ A production-grade AI-assisted database migration platform supporting **any-to-a
 | 3 | Knowledge base & planner agent | ✅ Complete |
 | 4 | Schema & logic translation (CrackSQL + Bedrock) | ✅ Complete, live-verified |
 | 5 | Data migration (Apache SeaTunnel bulk load + DDL apply) | ✅ Complete, live-verified |
-| 6 | Application code refactoring (OpenRewrite/Aider) | 🔲 Not started |
-| 7 | Validation & reconciliation (checksum adapter) | 🟡 Partial — checksum comparison implemented and wired into the graph; the `Test` phase node is still a hardcoded-PASS stub, no dedicated test-case generation yet |
+| 6 | Application code refactoring (OpenRewrite/Aider) | 🔲 Deferred — future extension |
+| 7 | Validation & reconciliation (checksum adapter) + Test phase | ✅ Complete — checksum/object-existence validation and a real `Test` node (schema compatibility, missing objects, referential integrity, performance smoke checks) are wired into the graph |
 | 8-10 | Deployment/cutover, observability hardening, final integration | 🔲 Not started |
 
 See [plan.md](plan.md) for the full phase-by-phase roadmap and [docs/architecture.md](docs/architecture.md) for system design.
@@ -382,6 +382,10 @@ The `cracksql` dependency is built locally, not fetched — run Quick Start step
 ### `poetry install` fails with a lock-file / content-hash error
 
 Run `poetry lock --no-update` (preserves existing resolved versions, just refreshes the hash) then `poetry install` again.
+
+### CrackSQL hybrid translation fails with embedding/Bedrock connection errors
+
+If `scripts/init_cracksql_kb.py` reports `Knowledge base initialization completed: 0/3 successful`, or hybrid translation logs `Missing credentials` / `Could not connect to the endpoint URL` for the embedding model, the CrackSQL SQLite config (`tool_adapters/cracksql_adapter/instance/info.db`) has a stale embedding-model row. Check `tool_adapters/cracksql_adapter/vendor/CrackSQL/backend/config/init_config.yaml`: the `EMBEDDING_MODELS` entry's `deployment_type` must be `"bedrock"` (not `"cloud"`, which routes to OpenAIEmbeddings) with `api_base` set to a real AWS region (not a placeholder string), and every `KNOWLEDGE_BASES[*].embedding_model` must reference the same Bedrock model name (`amazon.titan-embed-text-v2:0`), not `text-embedding-ada-002`. Delete `tool_adapters/cracksql_adapter/instance/info.db` and re-run `scripts/init_cracksql_kb.py` after fixing the yaml.
 
 ### SeaTunnel jobs fail to connect
 
