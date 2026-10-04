@@ -16,9 +16,9 @@ A production-grade AI-assisted database migration platform supporting **any-to-a
 | 7 | Validation & reconciliation (checksum adapter) + Test phase | ✅ Complete — checksum/object-existence validation and a real `Test` node (schema compatibility, missing objects, referential integrity, performance smoke checks) are wired into the graph |
 | 8 | Deployment, cutover & rollback (Terraform/Kubernetes/automatic rollback) | ✅ Complete — production Terraform modules (VPC/EKS/RDS/IAM), Helm charts, DeploymentAgent with 7-step safe cutover + automatic rollback |
 | 9 | Observability, security & CI/CD hardening (LangSmith tracing, Grafana dashboards, 6-stage pipeline, Secrets Manager, network policies) | ✅ Complete — GitHub Actions 6-stage pipeline, LangSmith tracing for all agents/tools, 4 Grafana dashboards, Secrets Manager async client, pod security policies, network policies |
-| 10 | Final integration, docs & demo | 🔲 Blocked on Phase 9 |
+| 10 | Final integration, docs & demo (E2E tests, deployment guide, performance testing, video script) | ✅ Complete — E2E workflow test for all 9 phases, AWS deployment guide, known issues documentation, performance testing suite, video recording script |
 
-See [plan.md](plan.md) for the full phase-by-phase roadmap and [docs/architecture.md](docs/architecture.md) for system design.
+See [docs/plan.md](docs/plan.md) for the full phase-by-phase roadmap and [docs/architecture.md](docs/architecture.md) for system design.
 
 ## Overview
 
@@ -36,7 +36,7 @@ This project implements an agentic AI system that:
 ## Project Structure
 
 ```
-Agentic-AI-Data-Migration/
+Agentic-AI-Database-Migration/
 ├── agents/                 # LangGraph agent implementations
 │   ├── assessment_agent/   # Schema discovery & analysis
 │   ├── code_agent/         # Application refactoring agent
@@ -427,10 +427,14 @@ MIT License - see LICENSE file for details
 
 - [Getting Started (step-by-step)](GETTING_STARTED.md) - From fresh clone to a running migration job
 - [Architecture & Design](docs/architecture.md) - System overview, sequence diagrams, shared state schema
-- [Implementation Plan](plan.md) - Phase-by-phase roadmap
-- [Capstone Proposal](Capstone_Proposal.md) - Original project brief & scope
+- [Implementation Plan](docs/plan.md) - Phase-by-phase roadmap
+- [Deployment Guide](docs/DEPLOYMENT_GUIDE.md) - Production AWS deployment guide
+- [Known Issues & Limitations](docs/KNOWN_ISSUES.md) - Documented issues with workarounds
+- [Performance Testing](docs/PERFORMANCE_TESTING.md) - Benchmark and load testing guide
+- [Challenges & Fixes](docs/challenges-and-fixes.md) - Bugs encountered and solutions applied
+- [Capstone Proposal](docs/Capstone_Proposal.md) - Original project brief & scope
 
 ---
 
-**Last Updated**: 2026-09-30
-**Status**: Phase 5 Complete (live-verified); Phase 7 partially implemented (checksum validation works, Test-phase stub still pending)
+**Last Updated**: 2026-10-05
+**Status**: All 10 phases complete ✅ — production-ready, fully tested, documented, and demo-ready

@@ -19,7 +19,7 @@ jobs:
   lint:
     name: Lint and Format Check
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -27,7 +27,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.11'
+          python-version: '3.12'
           cache: 'poetry'
 
       - name: Install Poetry
@@ -51,11 +51,39 @@ jobs:
         run: poetry run mypy . --ignore-missing-imports
         continue-on-error: true
 
+  security-scan:
+    name: Security Scan (Bandit)
+    runs-on: ubuntu-latest
+    needs: lint
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: Install bandit
+        run: pip install bandit
+
+      - name: Run Bandit security scan
+        run: bandit -r . -ll -f json -o bandit-report.json
+        continue-on-error: true
+
+      - name: Upload Bandit report
+        uses: actions/upload-artifact@v3
+        with:
+          name: bandit-report
+          path: bandit-report.json
+        continue-on-error: true
+
   test:
     name: Unit Tests
     runs-on: ubuntu-latest
     needs: lint
-    
+
     services:
       postgres:
         image: postgres:14-alpine
@@ -78,7 +106,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.11'
+          python-version: '3.12'
           cache: 'poetry'
 
       - name: Install Poetry
@@ -103,11 +131,12 @@ jobs:
         with:
           files: ./coverage.xml
           flags: unittests
+        continue-on-error: true
 
   build:
     name: Build and Push Docker Images
     runs-on: ubuntu-latest
-    needs: test
+    needs: [test, security-scan]
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
     permissions:
       contents: read
@@ -160,8 +189,8 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  security-scan:
-    name: Security Vulnerability Scan
+  vulnerability-scan:
+    name: Container Vulnerability Scan (Trivy)
     runs-on: ubuntu-latest
     needs: build
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
@@ -186,12 +215,12 @@ jobs:
   deploy-staging:
     name: Deploy to Staging
     runs-on: ubuntu-latest
-    needs: security-scan
+    needs: vulnerability-scan
     if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
     environment:
       name: staging
       url: https://staging.capstone.internal
-    
+
     env:
       AWS_REGION: us-east-1
       CLUSTER_NAME: capstone-staging
@@ -270,7 +299,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: deploy-staging
     if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
-    
+
     env:
       API_ENDPOINT: "http://capstone-platform.ns-platform:8000"
       AWS_REGION: us-east-1
@@ -283,7 +312,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.11'
+          python-version: '3.12'
           cache: 'poetry'
 
       - name: Install Poetry
@@ -308,7 +337,7 @@ jobs:
         run: |
           kubectl wait --for=condition=ready pod -l app=capstone-platform -n ns-platform --timeout=300s
 
-      - name: Run E2E migration test (MySQL → PostgreSQL)
+      - name: Run E2E migration test (MySQL -> PostgreSQL)
         run: poetry run pytest tests/e2e/test_deployment_phase8.py -v --tb=short
         env:
           MIGRATION_SOURCE_DIALECT: mysql
@@ -324,19 +353,19 @@ jobs:
     environment:
       name: production
       url: https://capstone.production
-    
+
     steps:
       - name: Approve production deployment
         run: |
           echo "✅ Production deployment approved. Ready to deploy."
-          echo "⏭️  Run 'Deploy to Production' workflow or manual \`terraform apply\` in prod account."
+          echo "⭐  Run 'Deploy to Production' workflow or manual terraform apply in prod account."
 
   deploy-prod:
     name: Deploy to Production
     runs-on: ubuntu-latest
     needs: promote-to-prod
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    
+
     env:
       AWS_REGION: us-east-1
       CLUSTER_NAME: capstone-prod
@@ -415,32 +444,3 @@ jobs:
           kubectl rollout status deployment/capstone-platform -n ns-platform --timeout=300s
           kubectl rollout status deployment/capstone-app -n ns-app --timeout=300s
           echo "✅ Production deployment complete and healthy."
-          name: codecov-umbrella
-        continue-on-error: true
-
-  security-scan:
-    name: Security Scan
-    runs-on: ubuntu-latest
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
-
-      - name: Install bandit
-        run: pip install bandit
-
-      - name: Run Bandit security scan
-        run: bandit -r . -ll -f json -o bandit-report.json
-        continue-on-error: true
-
-      - name: Upload Bandit report
-        uses: actions/upload-artifact@v3
-        with:
-          name: bandit-report
-          path: bandit-report.json
-        continue-on-error: true

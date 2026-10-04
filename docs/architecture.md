@@ -770,7 +770,7 @@ The rule of thumb: **agents change when workflow phases change; adapters change 
 
 ## 17. Implementation Status
 
-This section tracks which parts of the design above are real, working code vs. still a stub/placeholder, as of 2026-10-01. Kept up to date so this doc stays trustworthy rather than purely aspirational.
+This section tracks which parts of the design above are real, working code vs. still a stub/placeholder, as of 2026-10-05. Kept up to date so this doc stays trustworthy rather than purely aspirational.
 
 ### ✅ Implemented
 
@@ -794,18 +794,13 @@ This section tracks which parts of the design above are real, working code vs. s
 
 ### 🔮 Future Extension (designed, not yet built)
 
-These are explicitly scoped in this document and in `plan.md`, but currently exist only as empty interfaces, `.gitkeep` placeholders, or no-op stub nodes that just advance `current_phase`:
+These are explicitly scoped in this document and in `plan.md`, but currently exist only as empty interfaces or no-op stub nodes that just advance `current_phase`:
 
 | Area | Current state | What's missing |
 |---|---|---|
 | **CDC streaming** (Data Agent) | Bulk/batch load only | Streaming change-data-capture after initial bulk load |
 | **Code Agent** (`openrewrite_adapter`, `aider_adapter`) | Empty `__init__.py` stubs; `CodeRefactor` graph node is a no-op passthrough | ORM/JDBC dialect swap (OpenRewrite) + LLM-guided raw-SQL/SQLAlchemy edits (Aider) |
-| **LangSmith tracing** | `observability/langsmith/` empty | Per-call tracing (prompt/tokens/latency/cost) for every Bedrock call and tool invocation (currently Phase 4 only) |
-| **Grafana dashboards** | `observability/grafana-dashboards/` empty; metrics already emitted to Prometheus | Dashboard JSON for agent latency/cost, tool success rate, pod health, deployment/rollout status |
-| **Full CI/CD pipeline** | Lint + unit test only | Build images, vuln scan, push ECR, staging deploy, E2E sample migration test, manual gate, Terraform/Helm prod deploy |
 | **Secrets management** (Secrets Manager/IRSA runtime injection) | Local dev uses `.env`; Terraform/Helm already provision IRSA roles + Secrets Manager secrets | Runtime secret injection via AWS Secrets Manager / IRSA in deployed containers (no plaintext credentials in env) |
-| **Multi-tenant isolation**, **DR plan for metadata DB** | Not started | See [§16 Open Questions](#16-open-questions--future-work) |
-| **Secrets management** (Secrets Manager/IRSA) | Local dev uses `.env` | Runtime secret injection via AWS Secrets Manager / IRSA, no plaintext credentials |
 | **Multi-tenant isolation**, **DR plan for metadata DB** | Not started | See [§16 Open Questions](#16-open-questions--future-work) |
 
 No stubbed area was judged not worth keeping — all map directly to a Capstone-required capability ([Capstone_Proposal.md](./Capstone_Proposal.md)), so each is retained here as a scoped future extension rather than removed.

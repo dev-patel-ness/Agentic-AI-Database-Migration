@@ -1,159 +1,138 @@
-"""
-LangSmith tracing integration for all agents, tools, and LLM calls.
+"""LangSmith tracing integration for the migration platform (architecture.md §13).
 
-Provides decorators for automatic instrumentation of agent methods, tool invocations,
-and LLM calls with prompt/tokens/latency/cost tracking.
+Wraps every LangGraph agent node, tool adapter call, and Bedrock LLM invocation
+with a LangSmith run so prompt/tokens/latency/cost are captured per-job.
+
+Usage
+-----
+    from observability.langsmith.tracer import get_tracer
+
+    tracer = get_tracer()
+
+    @tracer.trace_agent("planner_agent")
+    def build_plan(state: MigrationState) -> dict:
+        ...
+
+    @tracer.trace_tool("cracksql_adapter")
+    def run_translation(config: AdapterConfig) -> ToolResult:
+        ...
+
+    @tracer.trace_llm_call("amazon.nova-pro-v1:0")
+    def call_bedrock(prompt: str) -> LLMResponse:
+        ...
 """
+
+from __future__ import annotations
 
 import asyncio
 import functools
 import logging
+import os
 import time
-from typing import Any, Callable, Optional, TypeVar, Union
-
-try:
-    from langsmith import Client as LangSmithClient
-    from langsmith.run_trees import RunTree
-    LANGSMITH_AVAILABLE = True
-except ImportError:
-    LANGSMITH_AVAILABLE = False
-    LangSmithClient = None
-    RunTree = None
+from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
-T = TypeVar("T")
+# Graceful degradation: LangSmith is optional — platform works without it.
+try:
+    from langsmith import Client as LangSmithClient
+
+    LANGSMITH_AVAILABLE = True
+except ImportError:
+    LANGSMITH_AVAILABLE = False
+    LangSmithClient = None  # type: ignore[assignment,misc]
+
+
+# Module-level singleton so all agents share one tracer instance.
+_tracer_instance: Optional["LangSmithTracer"] = None
+
+
+def get_tracer(
+    project_name: str | None = None,
+    api_key: str | None = None,
+) -> "LangSmithTracer":
+    """Return the module-level singleton tracer (creates it on first call)."""
+    global _tracer_instance
+    if _tracer_instance is None:
+        _tracer_instance = LangSmithTracer(
+            project_name=project_name or os.getenv("LANGSMITH_PROJECT", "migration-platform"),
+            api_key=api_key,
+        )
+    return _tracer_instance
 
 
 class LangSmithTracer:
-    """Wrapper around LangSmith client for structured tracing of agents and tools."""
+    """Decorator-based LangSmith tracer for agents, tools, and LLM calls.
 
-    def __init__(self, project_name: str, api_key: Optional[str] = None):
-        """
-        Initialize LangSmith tracer.
+    All decorators are no-ops when LangSmith is unavailable or when
+    ``LANGSMITH_TRACING_ENABLED`` is not ``"true"`` — the wrapped function
+    executes normally without any tracing overhead.
+    """
 
-        Args:
-            project_name: LangSmith project name (e.g., "capstone-staging")
-            api_key: LangSmith API key (optional, reads from LANGSMITH_API_KEY env var if not provided)
-        """
-        if not LANGSMITH_AVAILABLE:
-            logger.warning("LangSmith not installed; tracing disabled. Install with: pip install langsmith")
-            self.client = None
-            return
-
+    def __init__(
+        self,
+        project_name: str = "migration-platform",
+        api_key: str | None = None,
+        endpoint: str | None = None,
+    ) -> None:
         self.project_name = project_name
-        self.client = LangSmithClient(api_key=api_key)
-        self.active_run_stack: list[RunTree] = []
+        # Stack of active run IDs for parent-child nesting (thread-local would
+        # be safer in multi-threaded servers, but LangGraph runs are
+        # single-threaded per job so a list is sufficient here).
+        self.active_run_stack: list[str] = []
 
-        logger.info(f"LangSmith tracer initialized for project: {project_name}")
+        self.client: Any = None
+        self._enabled = (
+            LANGSMITH_AVAILABLE
+            and os.getenv("LANGSMITH_TRACING_ENABLED", "false").lower() == "true"
+        )
 
-    def _build_tags(self, base_tags: list[str], metadata: dict[str, Any]) -> list[str]:
-        """Build tag list from base tags and metadata."""
-        tags = base_tags.copy()
-        if metadata:
-            for key, value in metadata.items():
-                if isinstance(value, (str, int, float, bool)):
-                    tags.append(f"{key}={value}")
-        return tags
+        if self._enabled:
+            try:
+                self.client = LangSmithClient(
+                    api_key=api_key or os.getenv("LANGSMITH_API_KEY"),
+                    api_url=endpoint or os.getenv("LANGSMITH_ENDPOINT", "https://api.smith.langchain.com"),
+                )
+                logger.info("LangSmith tracing enabled (project=%s)", project_name)
+            except Exception as exc:
+                logger.warning("LangSmith client init failed (%s) — tracing disabled", exc)
+                self._enabled = False
+                self.client = None
+
+    # ------------------------------------------------------------------
+    # Public decorator API
+    # ------------------------------------------------------------------
 
     def trace_agent(
         self,
         agent_name: str,
-        tags: Optional[list[str]] = None,
-        metadata: Optional[dict[str, Any]] = None,
+        tags: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> Callable:
-        """
-        Decorator to trace agent method execution.
+        """Decorator: trace a LangGraph agent node function."""
 
-        Records:
-        - Agent name, input, output
-        - Execution time
-        - Success/failure status
-        - Custom metadata (risk scores, migration phase, etc.)
-
-        Args:
-            agent_name: Agent name (e.g., "assessment_agent", "schema_agent")
-            tags: Optional list of tags
-            metadata: Optional metadata dict to attach to trace
-
-        Returns:
-            Decorated function that traces execution.
-        """
-        def decorator(func: Callable[..., T]) -> Callable[..., T]:
-            @functools.wraps(func)
-            async def async_wrapper(*args, **kwargs) -> T:
-                if not self.client:
-                    return await func(*args, **kwargs)
-
-                trace_tags = self._build_tags(["agent", agent_name] + (tags or []), metadata or {})
-
-                try:
-                    start_time = time.time()
-                    result = await func(*args, **kwargs)
-                    duration = time.time() - start_time
-
-                    self.client.create_run(
-                        name=f"{agent_name}::{func.__name__}",
+        def decorator(fn: Callable) -> Callable:
+            if asyncio.iscoroutinefunction(fn):
+                @functools.wraps(fn)
+                async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
+                    return await self._run_async(
+                        fn, args, kwargs,
+                        run_name=f"{agent_name}::{fn.__name__}",
                         run_type="chain",
-                        inputs={"args": str(args)[:100], "kwargs": str(kwargs)[:100]},
-                        outputs={"result": str(result)[:100]},
-                        tags=trace_tags,
-                        metadata={"agent": agent_name, "duration_seconds": duration, **(metadata or {})},
+                        base_tags=["agent", agent_name] + (tags or []),
+                        extra_metadata={"agent": agent_name, **(metadata or {})},
                     )
-
-                    return result
-
-                except Exception as e:
-                    duration = time.time() - start_time
-                    self.client.create_run(
-                        name=f"{agent_name}::{func.__name__}",
-                        run_type="chain",
-                        inputs={"args": str(args)[:100], "kwargs": str(kwargs)[:100]},
-                        error=str(e),
-                        tags=trace_tags + ["error"],
-                        metadata={"agent": agent_name, "duration_seconds": duration, "error": str(e)},
-                    )
-                    raise
-
-            @functools.wraps(func)
-            def sync_wrapper(*args, **kwargs) -> T:
-                if not self.client:
-                    return func(*args, **kwargs)
-
-                trace_tags = self._build_tags(["agent", agent_name] + (tags or []), metadata or {})
-
-                try:
-                    start_time = time.time()
-                    result = func(*args, **kwargs)
-                    duration = time.time() - start_time
-
-                    self.client.create_run(
-                        name=f"{agent_name}::{func.__name__}",
-                        run_type="chain",
-                        inputs={"args": str(args)[:100], "kwargs": str(kwargs)[:100]},
-                        outputs={"result": str(result)[:100]},
-                        tags=trace_tags,
-                        metadata={"agent": agent_name, "duration_seconds": duration, **(metadata or {})},
-                    )
-
-                    return result
-
-                except Exception as e:
-                    duration = time.time() - start_time
-                    self.client.create_run(
-                        name=f"{agent_name}::{func.__name__}",
-                        run_type="chain",
-                        inputs={"args": str(args)[:100], "kwargs": str(kwargs)[:100]},
-                        error=str(e),
-                        tags=trace_tags + ["error"],
-                        metadata={"agent": agent_name, "duration_seconds": duration, "error": str(e)},
-                    )
-                    raise
-
-            # Detect if coroutine
-            if asyncio.iscoroutinefunction(func):
                 return async_wrapper
             else:
+                @functools.wraps(fn)
+                def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
+                    return self._run_sync(
+                        fn, args, kwargs,
+                        run_name=f"{agent_name}::{fn.__name__}",
+                        run_type="chain",
+                        base_tags=["agent", agent_name] + (tags or []),
+                        extra_metadata={"agent": agent_name, **(metadata or {})},
+                    )
                 return sync_wrapper
 
         return decorator
@@ -161,49 +140,70 @@ class LangSmithTracer:
     def trace_tool(
         self,
         tool_name: str,
-        tags: Optional[list[str]] = None,
-        metadata: Optional[dict[str, Any]] = None,
+        tags: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> Callable:
-        """
-        Decorator to trace tool adapter execution.
+        """Decorator: trace a tool adapter ``run()`` call."""
 
-        Records:
-        - Tool name, input, output
-        - Success/failure status
-        - Execution time
-        - Tool-specific metadata
-
-        Args:
-            tool_name: Tool adapter name (e.g., "terraform_adapter", "kubectl_adapter")
-            tags: Optional list of tags
-            metadata: Optional metadata dict
-
-        Returns:
-            Decorated function that traces execution.
-        """
-        def decorator(func: Callable[..., T]) -> Callable[..., T]:
-            @functools.wraps(func)
-            async def async_wrapper(*args, **kwargs) -> T:
-                if not self.client:
-                    return await func(*args, **kwargs)
-
-                trace_tags = self._build_tags(["tool", tool_name] + (tags or []), metadata or {})
-
-                try:
-                    start_time = time.time()
-                    result = await func(*args, **kwargs)
-                    duration = time.time() - start_time
-
-                    # Extract success flag if result is a dict-like object
-                    success = getattr(result, "success", None)
-
-                    self.client.create_run(
-                        name=f"{tool_name}::{func.__name__}",
+        def decorator(fn: Callable) -> Callable:
+            if asyncio.iscoroutinefunction(fn):
+                @functools.wraps(fn)
+                async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
+                    return await self._run_async(
+                        fn, args, kwargs,
+                        run_name=f"{tool_name}::{fn.__name__}",
                         run_type="tool",
-                        inputs={"kwargs": str(kwargs)[:100]},
-                        outputs={"success": success, "output": str(result)[:100]},
-                        tags=trace_tags + (["success"] if success else ["failure"] if success is False else []),
-                        metadata={"tool": tool_name, "duration_seconds": duration, "success": success, **(metadata or {})},
+                        base_tags=["tool", tool_name] + (tags or []),
+                        extra_metadata={"tool": tool_name, **(metadata or {})},
+                        capture_tool_result=True,
+                    )
+                return async_wrapper
+            else:
+                @functools.wraps(fn)
+                def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
+                    return self._run_sync(
+                        fn, args, kwargs,
+                        run_name=f"{tool_name}::{fn.__name__}",
+                        run_type="tool",
+                        base_tags=["tool", tool_name] + (tags or []),
+                        extra_metadata={"tool": tool_name, **(metadata or {})},
+                        capture_tool_result=True,
+                    )
+                return sync_wrapper
+
+        return decorator
+
+    def trace_llm_call(
+        self,
+        model_name: str,
+        tags: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> Callable:
+        """Decorator: trace a Bedrock LLM invocation (captures tokens + latency)."""
+
+        def decorator(fn: Callable) -> Callable:
+            if asyncio.iscoroutinefunction(fn):
+                @functools.wraps(fn)
+                async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
+                    return await self._run_async(
+                        fn, args, kwargs,
+                        run_name=f"llm::{model_name}",
+                        run_type="llm",
+                        base_tags=["llm", model_name] + (tags or []),
+                        extra_metadata={"model": model_name, **(metadata or {})},
+                        capture_llm_tokens=True,
+                    )
+                return async_wrapper
+            else:
+                @functools.wraps(fn)
+                def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
+                    return self._run_sync(
+                        fn, args, kwargs,
+                        run_name=f"llm::{model_name}",
+                        run_type="llm",
+                        base_tags=["llm", model_name] + (tags or []),
+                        extra_metadata={"model": model_name, **(metadata or {})},
+                        capture_llm_tokens=True,
                     )
 
                     return result
