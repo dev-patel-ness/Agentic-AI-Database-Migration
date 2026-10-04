@@ -785,8 +785,12 @@ This section tracks which parts of the design above are real, working code vs. s
 | Data Agent + `seatunnel_adapter` | Bulk (batch) load only, FK-dependency-ordered table load, idempotent re-run (`DROP_DATA`) |
 | Validation Agent + `checksum_adapter` | Row-count/checksum reconciliation, `ValidationReport`, Prometheus metrics |
 | Human-in-the-loop gates | `HumanReviewPlan` and `HumanReviewValidation` are real interrupts with persisted `ApprovalRecord`s |
-| CI | Lint (black/isort/flake8/mypy) + unit tests on push/PR (`.github/workflows/ci.yml`) |
-| Prometheus metrics definitions | `observability/metrics.py` — validation, retry, and throughput metrics emitted |
+| Test phase | Generated/executed schema compatibility, referential integrity checks (FK orphan queries), and performance smoke tests (timed `COUNT(*)`) wired into graph with `Test → Done/Validate` routing per validation result |
+| **Deployment Agent + `kubectl_adapter` + `terraform_adapter`** | Real rolling update, health-check gating, automatic `kubectl rollout undo` on pod/health/traffic failure; async subprocess wrappers with JSON output parsing |
+| **Infra as code (Terraform)** | 5 modules (VPC, EKS, RDS, IAM/IRSA, outputs) + 330 lines of variables/locals/data sources; VPC 3-tier (public/private/database subnets), EKS 1.28 with 2 node groups (platform/app), RDS multi-AZ (PostgreSQL/MySQL/Oracle), IRSA for pods |
+| **Kubernetes Helm charts** | `capstone-platform` (2 replicas, HPA 2-5, network policies, RBAC, PDB) and `capstone-app` (3 replicas, HPA 3-10, pod anti-affinity, network policies, RBAC, PDB) with liveness/readiness probes, resource limits, and rolling update strategy |
+| CI | Lint (black/isort/flake8/mypy) + unit tests on push/PR (`.github/workflows/ci.yml`); unit tests for terraform_adapter, kubectl_adapter, deployment_agent workflows |
+| Prometheus metrics definitions | `observability/metrics.py` – validation, retry, throughput, and deployment (rollout success/duration) metrics emitted |
 
 ### 🔮 Future Extension (designed, not yet built)
 
@@ -796,12 +800,11 @@ These are explicitly scoped in this document and in `plan.md`, but currently exi
 |---|---|---|
 | **CDC streaming** (Data Agent) | Bulk/batch load only | Streaming change-data-capture after initial bulk load |
 | **Code Agent** (`openrewrite_adapter`, `aider_adapter`) | Empty `__init__.py` stubs; `CodeRefactor` graph node is a no-op passthrough | ORM/JDBC dialect swap (OpenRewrite) + LLM-guided raw-SQL/SQLAlchemy edits (Aider) |
-| **Test phase** (automated test-case generation) | Stub node always returns `PASS` | Generated/executed schema-compat, referential-integrity, performance smoke tests |
-| **Deployment Agent** (`kubectl_adapter`, `terraform_adapter`) | Empty `__init__.py` stubs; `Cutover`/`Verify` nodes are stubs (`Verify` hardcodes `HEALTHY`) | Real rolling update, health-check gating, automatic `kubectl rollout undo` |
-| **Infra as code** (`infra/terraform`, `infra/k8s`, `infra/github-actions`) | `.gitkeep` placeholders only | Terraform modules (`network`, `eks`, `rds-instance`, `metadata-db`, `iam`); Helm charts; full deploy pipeline |
-| **LangSmith tracing** | `observability/langsmith/` empty | Per-call tracing (prompt/tokens/latency/cost) for every Bedrock call |
-| **Grafana dashboards** | `observability/grafana-dashboards/` empty; metrics already emitted to Prometheus | Dashboard JSON for agent latency/cost, tool success rate, pod health |
-| **Full CI/CD pipeline** | Lint + unit test only | Build images, vuln scan, push ECR, staging deploy, E2E test, manual gate, Terraform/Helm prod deploy |
+| **LangSmith tracing** | `observability/langsmith/` empty | Per-call tracing (prompt/tokens/latency/cost) for every Bedrock call and tool invocation (currently Phase 4 only) |
+| **Grafana dashboards** | `observability/grafana-dashboards/` empty; metrics already emitted to Prometheus | Dashboard JSON for agent latency/cost, tool success rate, pod health, deployment/rollout status |
+| **Full CI/CD pipeline** | Lint + unit test only | Build images, vuln scan, push ECR, staging deploy, E2E sample migration test, manual gate, Terraform/Helm prod deploy |
+| **Secrets management** (Secrets Manager/IRSA runtime injection) | Local dev uses `.env`; Terraform/Helm already provision IRSA roles + Secrets Manager secrets | Runtime secret injection via AWS Secrets Manager / IRSA in deployed containers (no plaintext credentials in env) |
+| **Multi-tenant isolation**, **DR plan for metadata DB** | Not started | See [§16 Open Questions](#16-open-questions--future-work) |
 | **Secrets management** (Secrets Manager/IRSA) | Local dev uses `.env` | Runtime secret injection via AWS Secrets Manager / IRSA, no plaintext credentials |
 | **Multi-tenant isolation**, **DR plan for metadata DB** | Not started | See [§16 Open Questions](#16-open-questions--future-work) |
 

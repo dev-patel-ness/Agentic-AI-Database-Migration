@@ -14,7 +14,9 @@ A production-grade AI-assisted database migration platform supporting **any-to-a
 | 5 | Data migration (Apache SeaTunnel bulk load + DDL apply) | ✅ Complete, live-verified |
 | 6 | Application code refactoring (OpenRewrite/Aider) | 🔲 Deferred — future extension |
 | 7 | Validation & reconciliation (checksum adapter) + Test phase | ✅ Complete — checksum/object-existence validation and a real `Test` node (schema compatibility, missing objects, referential integrity, performance smoke checks) are wired into the graph |
-| 8-10 | Deployment/cutover, observability hardening, final integration | 🔲 Not started |
+| 8 | Deployment, cutover & rollback (Terraform/Kubernetes/automatic rollback) | ✅ Complete — production Terraform modules (VPC/EKS/RDS/IAM), Helm charts, DeploymentAgent with 7-step safe cutover + automatic rollback |
+| 9 | Observability, security & CI/CD hardening | 🟨 Partially done — Prometheus + CI/CD pipeline in progress |
+| 10 | Final integration, docs & demo | 🔲 Blocked on Phase 9 |
 
 See [plan.md](plan.md) for the full phase-by-phase roadmap and [docs/architecture.md](docs/architecture.md) for system design.
 
