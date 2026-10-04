@@ -198,6 +198,7 @@ def _snapshot_to_status(job_id: str, snapshot) -> JobStatusResponse:
         retry_count=state.retry_count,
         approvals=[a.model_dump(mode="json") for a in state.approvals],
         retry_history=[r.model_dump(mode="json") for r in state.retry_history],
+        execution_trace=[step.model_dump(mode="json") for step in state.execution_trace],
         discovery=state.discovery.model_dump(mode="json") if state.discovery else None,
         plan=state.plan.model_dump(mode="json") if state.plan else None,
         schema_translation=(
