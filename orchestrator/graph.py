@@ -596,9 +596,70 @@ def _human_review_validation(state: MigrationState) -> dict[str, Any]:
 
 def _route_after_validation_review(state: MigrationState) -> str:
     return {
-        ReviewDecision.APPROVE.value: "Test",
+        ReviewDecision.APPROVE.value: "ApplyManualReviews",
         ReviewDecision.MODIFY.value: "DataMigrate",
     }.get(state.validation_decision or "", END)
+
+
+def _apply_manual_reviews(state: MigrationState) -> dict[str, Any]:
+    """Apply all objects flagged as PENDING_MANUAL_REVIEW that the human
+    approved during validation review. This runs after HumanReviewValidation
+    but before Test, ensuring approved pending objects are on the target
+    before test checks execute."""
+    _log_phase(state, "ApplyManualReviews")
+    
+    from agents.schema_agent import apply_schema_translations
+    
+    trace = add_step(state.execution_trace, "ApplyManualReviews",
+                     "Applying manually-reviewed schema objects",
+                     "Executing DDL for all approved pending objects")
+    
+    connections = connection_registry.get(state.job_id)
+    if connections is None:
+        raise RuntimeError(
+            f"no registered connection config for job {state.job_id} — the API "
+            "process may have restarted; recreate the job"
+        )
+    _source_connection, target_connection = connections
+    
+    try:
+        # Apply all pending objects (no skip list this time — approved objects get applied)
+        results = apply_schema_translations(
+            state.job_id,
+            state.dialects.target,
+            target_connection,
+            manual_review_objects=None,  # None = apply everything, including previously-pending
+        )
+        
+        applied_count = sum(1 for r in results if r["status"] == "APPLIED")
+        pending_count = sum(1 for r in results if r["status"] == "PENDING_MANUAL_REVIEW")
+        failed_count = sum(1 for r in results if r["status"] == "APPLY_FAILED")
+        
+        detail = f"{applied_count} applied, {pending_count} pending, {failed_count} failed"
+        trace = add_step(trace, "ApplyManualReviews",
+                         "Pending objects applied",
+                         detail,
+                         status="SUCCESS" if failed_count == 0 else "PARTIAL")
+        
+        logger.info("[job=%s] Applied pending manual review objects: %s", state.job_id, detail)
+    except Exception as exc:
+        trace = add_step(trace, "ApplyManualReviews",
+                        "Failed to apply pending objects",
+                        str(exc),
+                        status="FAILED",
+                        error=str(exc))
+        logger.exception("[job=%s] ApplyManualReviews failed: %s", state.job_id, exc)
+        return {
+            "current_phase": "ApplyManualReviews",
+            "status": JobStatus.PAUSED.value,
+            "execution_trace": trace,
+        }
+    
+    return {
+        "current_phase": "ApplyManualReviews",
+        "status": JobStatus.RUNNING.value,
+        "execution_trace": trace,
+    }
 
 
 # --- Test / cutover / verify --------------------------------------------------
@@ -1012,6 +1073,7 @@ def build_state_graph() -> StateGraph:
     graph.add_node("DataMigrate", _traced("DataMigrate", with_retry("DataMigrate", _RETRYABLE_NODES["DataMigrate"])))
     graph.add_node("Validate", _traced("Validate", _validate))
     graph.add_node("HumanReviewValidation", _human_review_validation)
+    graph.add_node("ApplyManualReviews", _traced("ApplyManualReviews", _apply_manual_reviews))
     graph.add_node("Test", _traced("Test", with_retry("Test", _RETRYABLE_NODES["Test"])))
     graph.add_node("HumanReviewCutover", _human_review_cutover)
     graph.add_node("Cutover", _traced("Cutover", with_retry("Cutover", _RETRYABLE_NODES["Cutover"])))
@@ -1037,8 +1099,9 @@ def build_state_graph() -> StateGraph:
     graph.add_conditional_edges(
         "HumanReviewValidation",
         _route_after_validation_review,
-        {"Test": "Test", "DataMigrate": "DataMigrate", END: END},
+        {"ApplyManualReviews": "ApplyManualReviews", "DataMigrate": "DataMigrate", END: END},
     )
+    graph.add_edge("ApplyManualReviews", "Test")
     graph.add_conditional_edges(
         "Test",
         _route_after_test,
