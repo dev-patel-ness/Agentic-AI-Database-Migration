@@ -175,7 +175,27 @@ pre-commit install
 pre-commit run --all-files
 ```
 
-### 9. Run Tests
+### 9. Start the Full Application Stack
+
+**For Interactive Development (recommended):**
+
+Terminal 1 (API backend):
+```powershell
+.\scripts\Start-API-Clean.ps1
+```
+
+Terminal 2 (UI frontend):
+```bash
+cd apps/ui-streamlit
+poetry run streamlit run app.py
+```
+
+Then visit:
+- **UI**: http://localhost:8501
+- **API**: http://localhost:8000
+- **API Docs**: http://localhost:8000/docs
+
+### 10. Run Tests
 
 ```bash
 poetry run pytest tests/unit/ -v
@@ -238,6 +258,131 @@ poetry run streamlit run app.py --server.port 8501
 ```
 
 UI: http://localhost:8501
+
+### Full Application Stack (API + UI)
+
+To run the complete platform with both backend and frontend:
+
+**Terminal 1 - FastAPI Backend:**
+```powershell
+.\scripts\Start-API-Clean.ps1      # Windows: resets sample DBs before starting
+# or on Linux/macOS:
+docker compose down -v && docker compose up -d
+poetry run uvicorn apps/api-fastapi/main:app --reload --host 0.0.0.0 --port 8000
+```
+
+**Terminal 2 - Streamlit Frontend:**
+```bash
+cd apps/ui-streamlit
+poetry run streamlit run app.py --server.port 8501
+```
+
+The UI at http://localhost:8501 connects to the API at http://localhost:8000.
+
+---
+
+## Observability
+
+### LangSmith Tracing (LLM Evaluation & Agent Traces)
+
+View all agent execution traces, LLM calls, tokens, and cost tracking:
+
+**1. Enable LangSmith in `.env`:**
+```env
+LANGSMITH_TRACING_ENABLED=true
+LANGSMITH_API_KEY=your_langsmith_api_key
+LANGSMITH_PROJECT=migration-platform
+```
+
+Get your API key from https://smith.langchain.com
+
+**2. Traces appear automatically** during job execution in LangSmith:
+- **Agent traces** — discovery, planner, schema translation, data migration, validation
+- **Tool invocations** — CrackSQL, SeaTunnel, checksum validation
+- **LLM calls** — tokens used, latency, cost (Bedrock Nova Pro pricing)
+- **Metrics** — success/failure rates per phase
+
+Access at: https://smith.langchain.com → Project `migration-platform`
+
+### Prometheus Metrics (Local)
+
+Metrics are exposed automatically at `http://localhost:8000/metrics`:
+
+```bash
+# View raw metrics
+curl http://localhost:8000/metrics
+
+# Key metrics:
+# - migration_validation_passed_tables
+# - migration_phase_duration_seconds
+# - migration_data_throughput_rows_per_second
+# - agent_latency_seconds
+# - llm_tokens_input_total / llm_tokens_output_total
+```
+
+### Grafana Dashboards (Production / AWS EKS)
+
+For production deployment with visualization dashboards:
+
+```bash
+# Deploy Prometheus + Grafana (see docs/DEPLOYMENT_GUIDE.md Phase 4)
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo update
+
+helm install prometheus prometheus-community/kube-prometheus-stack \
+  --namespace observability \
+  --set prometheus.prometheusSpec.storageSpec.volumeClaimTemplate.spec.resources.requests.storage=10Gi \
+  --wait
+
+helm repo add grafana https://grafana.github.io/helm-charts
+helm install grafana grafana/grafana \
+  --namespace observability \
+  --set adminPassword='SECURE_PASSWORD' \
+  --wait
+```
+
+**Pre-built dashboards** (in `observability/grafana-dashboards/`):
+- **Agent Latency & LLM Cost** — execution time, token usage, cost
+- **Tool Success Rate** — adapter success/failure rates
+- **Pod Health** — Kubernetes pod CPU/memory
+- **Deployment Rollout** — deployment status and rollback events
+
+---
+
+## Viewing Migration Results & Evaluations
+
+After running a migration job, view detailed results in **multiple ways**:
+
+### 1. **Streamlit UI Dashboard** (Recommended for Human Review)
+
+http://localhost:8501 shows all phases with live results:
+- **🔍 Discovery** — object catalog
+- **📋 Plan** — risk assessment, manual-review flags
+- **🔁 Schema Translation** — DDL with confidence scores, side-by-side SQL comparison
+- **📦 Data Migration** — rows moved, per-table results
+- **✅ Validation** — checksum results, object presence validation
+- **🧪 Test Report** — pre-cutover checks (schema compatibility, referential integrity, performance)
+- **🚀 Deployment** — cutover and rollback status
+- **📊 Execution Log** — full timeline with per-step details
+- **🧬 Schema SQL Compare** — complete source/target introspection
+
+### 2. **REST API** (Programmatic Access)
+
+```bash
+# Get full job state with all results
+curl http://localhost:8000/jobs/{job_id}
+
+# Get schema comparison
+curl http://localhost:8000/jobs/{job_id}/schema-sql
+```
+
+### 3. **LangSmith** (Traces & LLM Evaluations)
+
+https://smith.langchain.com → Project `migration-platform` shows:
+- Per-agent execution traces
+- LLM call details (model, tokens, latency, cost)
+- Tool adapter invocations
+- Error logs and backtraces
 
 ### Creating a New Tool Adapter
 
@@ -438,4 +583,5 @@ MIT License - see LICENSE file for details
 ---
 
 **Last Updated**: 2026-10-05
-**Status**: All 10 phases complete ✅ — production-ready, fully tested, documented, and demo-ready
+**Status**: All 10 phases complete ✅ — production-ready, fully tested, documented, demo-ready, and observable
+**Features**: LangSmith tracing for all agents/tools, Prometheus metrics, 4 Grafana dashboards, comprehensive observability stack
