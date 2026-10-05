@@ -58,7 +58,7 @@
 **Visual:**
 - Show architecture.md diagram (VPC, EKS, RDS, Bedrock)
 - Point to each phase with cursor
-- Pan across Terraform state/Helm charts
+- Pan across architecture and code structure
 - Brief screenshot of orchestrator/graph.py
 
 ---
@@ -104,7 +104,7 @@
 
 **Visual:**
 - Agent Cost & Latency dashboard: show p50/p95/p99 latency, token usage graph
-- Tool Success Rate dashboard: show terraform and kubectl adapter success (should be 100%)
+- Tool Success Rate dashboard: show kubectl adapter and migration tool success rates
 - Pod Health dashboard: show 2/2 replicas ready, CPU/memory trending
 - Deployment Rollout dashboard: show rollout duration, no rollbacks
 
@@ -123,7 +123,7 @@
 > 
 > **Phase 7**: We ran comprehensive validation checks: checksums on all tables matched, all foreign keys were intact, and performance smoke tests passed.
 > 
-> **Phase 8**: We deployed the new database configuration to our Kubernetes cluster using Terraform for infrastructure and Helm for application configuration. A safe rolling update with automatic rollback capability.
+> **Phase 8**: Application deployment (future extension) – will include safe rolling updates and automatic rollback capability via Kubernetes.
 > 
 > **Phase 9**: Every step was instrumented with observability—tracing in LangSmith, metrics in Prometheus, and visualized in these Grafana dashboards."
 
@@ -199,14 +199,14 @@
 > - Phase 8: Production deployment with automatic rollback
 > - Phase 9: Full observability stack (LangSmith, Prometheus, Grafana, security hardening)
 > 
-> The system is production-ready for real-world database migrations at enterprise scale. It's fully open-source, uses industry-standard tools (Kubernetes, Terraform, Bedrock), and includes comprehensive documentation for deployment and operations.
+> The core migration pipeline is production-ready for database migrations with AI-powered schema translation. It's fully open-source, uses industry-standard tools (Bedrock, LangGraph, Docker), and includes comprehensive documentation. Full infrastructure automation (Terraform/Kubernetes) is planned as a future extension.
 > 
 > Thank you for watching. For more information, please see the GitHub repository at [link] and the architecture documentation."
 
 **Visual:**
 - Final slide with project stats:
   - 43 new files created
-  - 1,100+ lines of Terraform
+  - Architecture documentation and roadmap (Terraform/Kubernetes planned)
   - 600+ lines of Helm
   - 500+ lines of CI/CD
   - 5+ Kubernetes manifests

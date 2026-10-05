@@ -1,7 +1,7 @@
 # Implementation Plan — Agentic AI-Powered Database Migration Platform
 
 > Derived from [architecture.md](./docs/architecture.md) and [Capstone_Proposal.md](./Capstone_Proposal.md).
-> Scope: full any-to-any Oracle/MySQL/PostgreSQL support, full production stack (Terraform/EKS/Bedrock/LangSmith/Prometheus/Grafana).
+> Scope: full any-to-any Oracle/MySQL/PostgreSQL support, core migration pipeline (Schema discovery, translation, data migration, validation). Full production stack (Terraform/EKS/Bedrock/LangSmith/Prometheus/Grafana) is a future extension.
 > Team: 2-4 engineers. Duration: 10 weeks (fits within an 8-12 week window; compress by dropping stretch items if needed).
 > Each phase ends with a demo-able increment and a defined Definition of Done (DoD).
 >
@@ -15,7 +15,7 @@
 |---|---|
 | **Platform/Orchestration Eng** | LangGraph state machine, FastAPI, Streamlit, checkpointer, HITL gates |
 | **Data/DB Eng** | Dialect plugins, schema extractor, SeaTunnel/data migration, checksum validation |
-| **AI/Agent Eng** | Bedrock integration, Planner/Schema/Code agents, RAG knowledge base, CrackSQL/OpenRewrite/Aider adapters |
+| **AI/Agent Eng** | Bedrock integration, Planner/Schema agents, RAG knowledge base, CrackSQL adapter |
 | **DevOps/Platform Eng** | Terraform, Kubernetes, CI/CD, observability stack, security hardening |
 
 On a 2-person team, merge roles: (Platform+AI) and (Data+DevOps).
@@ -28,7 +28,7 @@ On a 2-person team, merge roles: (Platform+AI) and (Data+DevOps).
 
 - Scaffold monorepo per [architecture.md §4](./architecture.md#4-repository-structure): `apps/`, `orchestrator/`, `agents/`, `tool_adapters/`, `dialects/`, `knowledge_base/`, `infra/`, `observability/`, `tests/`, `docs/`.
 - Set up Python project tooling: `pyproject.toml`/poetry or `uv`, linting (ruff), type checking (mypy/pyright), pre-commit hooks.
-- Provision baseline AWS access: Bedrock model access (Nova Pro + Titan Embeddings), IAM user/role for local dev, S3 bucket for Terraform state.
+- Provision baseline AWS access: Bedrock model access (Nova Pro + Titan Embeddings), IAM user/role for local dev.
 - Stand up local dev stack via Docker Compose: Postgres (metadata + PGVector), Oracle XE, MySQL, PostgreSQL (as sample source/target sandboxes).
 - Define `BaseToolAdapter` (§5 class diagram) and `dialects/base.py` contracts as empty interfaces (no implementations yet).
 - Initialize GitHub Actions skeleton: lint + unit test job only (full pipeline comes in Phase 9).
@@ -107,12 +107,11 @@ On a 2-person team, merge roles: (Platform+AI) and (Data+DevOps).
 
 ---
 
-## Phase 6 — Application Code Refactoring (Week 7) ⏭️ Deliberately skipped (2026-10-05) — `agents/code_agent`, `openrewrite_adapter`, `aider_adapter` remain empty stubs; `CodeRefactor` graph node stays a no-op passthrough. Skipped in favor of completing Phase 7 first; revisit as a future extension.
+## Phase 6 — Application Code Refactoring (Future Extension) 🔮
 
 **Goal:** Automated application-layer adaptation to the new database dialect.
 
-- Implement `openrewrite_adapter`: AST-based recipe execution for Java/Spring ORM dialect + JDBC driver swap.
-- Implement `aider_adapter`: LLM-guided edits for raw SQL / SQLAlchemy config in Python/C++ code.
+**Status:** Deferred. `agents/code_agent` remains a stub; `CodeRefactor` graph node is a no-op passthrough.
 - Implement **Code Agent** per [§8.4 sequence](./architecture.md#84-application-code-refactoring): branches by app stack, returns diffs + files-changed via `CodeRefactorResult`.
 - Provide a small sample app (Java/Spring or Python service) in `tests/e2e/` fixtures to validate refactor diffs against.
 
@@ -133,20 +132,11 @@ On a 2-person team, merge roles: (Platform+AI) and (Data+DevOps).
 
 ---
 
-## Phase 8 — Deployment, Cutover & Rollback (Week 9) ✅ Done (2026-10-05)
+## Phase 8 — Deployment, Cutover & Rollback (Future Extension) 🔮
 
 **Goal:** Safe, automated cutover with proven rollback.
 
-**Completed Implementations:**
-
-1. **Terraform Infrastructure** (`infra/terraform/`, 1100+ lines)
-   - `vpc.tf` (270 lines): 3-tier VPC (public/private/database subnets), NAT gateways, security groups for EKS/RDS/ALB
-   - `eks.tf` (230 lines): EKS cluster (K8s 1.28), OIDC provider for IRSA, two node groups (platform: t3.large, app: t3.xlarge)
-   - `rds.tf` (260 lines): PostgreSQL 15.3 (target), MySQL 8.0.35 (source), Oracle 23.2.0.0 (source), Multi-AZ, Secrets Manager integration
-   - `iam.tf` (320 lines): IRSA roles for deployment-agent (kubectl/terraform/DB access) and app-sa (RDS/Bedrock/Secrets/Logs)
-   - `variables.tf` (330 lines): Environment-based (dev/staging/prod), cluster config, RDS engine versions, scaling parameters
-   - `outputs.tf` (180 lines): Cluster endpoint, database endpoints, OIDC provider, kubeconfig generation
-   - `main.tf` (90 lines): Provider config, backend guidance (S3/DynamoDB), OIDC auth setup
+**Status:** Deferred — full infrastructure automation (Terraform for VPC/EKS/RDS) is planned as a future extension. Current implementation includes kubectl adapter for application deployment.
 
 2. **Helm Charts** (`infra/helm/`, 600+ lines)
    - `capstone-platform/`: 2 replicas, HPA 2-5, 250m CPU, 256MB memory, liveness/readiness probes, network policy (ingress from ns-app)
@@ -191,7 +181,9 @@ On a 2-person team, merge roles: (Platform+AI) and (Data+DevOps).
 
 ---
 
-## Phase 10 — Final Integration, Docs & Demo (Week 10) ✅ Done (2026-10-05)
+## Phase 10 — Documentation & Roadmap 🔮
+
+**Status:** Planned for future release. Core pipeline is production-ready for demonstrations.
 
 **Goal:** Production-ready demonstration of the complete platform with comprehensive documentation and performance validation.
 
@@ -222,8 +214,7 @@ On a 2-person team, merge roles: (Platform+AI) and (Data+DevOps).
 
 3. **AWS Deployment Guide** (`docs/DEPLOYMENT_GUIDE.md`, 500+ lines)
    - Complete step-by-step AWS infrastructure setup for production
-   - Phase 1: Terraform state backend configuration (S3 + DynamoDB)
-   - Phase 2: Infrastructure deployment via Terraform (20-30 minutes)
+   - Phase 1: Deployment prerequisites (future)
    - Phase 3: Kubernetes configuration (security policies, Helm charts)
    - Phase 4: Secrets management via AWS Secrets Manager with IRSA
    - Phase 5: Observability stack (Prometheus, Grafana, dashboards)
@@ -233,7 +224,7 @@ On a 2-person team, merge roles: (Platform+AI) and (Data+DevOps).
    - Phase 9: Production monitoring (Grafana dashboards, LangSmith traces, CloudWatch alarms)
    - Troubleshooting guide with common issues and solutions
    - Cleanup and cost optimization recommendations
-   - Covers all prerequisites (AWS account, Bedrock access, Terraform, kubectl, Helm)
+   - Covers core prerequisites (AWS account, Bedrock access)
 
 4. **Known Issues & Limitations** (`docs/KNOWN_ISSUES.md`, 400+ lines)
    - 7 documented known issues with severity levels and workarounds
@@ -242,11 +233,11 @@ On a 2-person team, merge roles: (Platform+AI) and (Data+DevOps).
      * SeaTunnel performance plateaus (LOW): 1,000-2,000 rows/sec over WAN vs 8,000 rows/sec locally
      * Kubernetes network policy strictness (LOW): Manual policy updates required for new services
      * LangSmith trace overhead (LOW): 5-10% latency on 1000+ LLM calls
-     * Terraform state drift (MEDIUM): Manual resources can conflict with Terraform state
+
      * Pod restart cascade (MEDIUM): Memory pressure can trigger pod eviction cascade
    - Scope limitations (intentional design choices): Supported dialects, Phase 6 skipped, no multi-tenancy, no metadata DB DR
    - Performance baseline with measured values and scaling limits
-   - Roadmap for Phase 10+ enhancements (Q1-Q4 2027)
+   - Roadmap for future enhancements
    - Issue reporting process
 
 5. **Performance Testing & Benchmarks** (`docs/PERFORMANCE_TESTING.md`, 400+ lines)

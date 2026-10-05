@@ -609,6 +609,7 @@ def _apply_manual_reviews(state: MigrationState) -> dict[str, Any]:
     _log_phase(state, "ApplyManualReviews")
     
     from agents.schema_agent import apply_schema_translations
+    from agents.schema_agent.metadata_store import fetch_applicable_translations, metadata_connection, _topological_sort_by_dependencies, mark_translation_applied, _connect
     
     trace = add_step(state.execution_trace, "ApplyManualReviews",
                      "Applying manually-reviewed schema objects",
@@ -623,23 +624,43 @@ def _apply_manual_reviews(state: MigrationState) -> dict[str, Any]:
     _source_connection, target_connection = connections
     
     try:
-        # Apply all pending objects (no skip list this time — approved objects get applied)
-        results = apply_schema_translations(
-            state.job_id,
-            state.dialects.target,
-            target_connection,
-            manual_review_objects=None,  # None = apply everything, including previously-pending
-        )
+        # Fetch and apply PENDING_MANUAL_REVIEW objects (those that were skipped during DataMigrate)
+        results: list[dict[str, Any]] = []
+        with metadata_connection() as meta_conn:
+            pending = fetch_applicable_translations(meta_conn, state.job_id, include_pending_manual_review=True)
+            pending = _topological_sort_by_dependencies(pending, state.job_id)
+            
+            if pending:
+                target_conn = _connect(state.dialects.target, target_connection)
+                try:
+                    for row in pending:
+                        object_type, object_name, ddl = row["object_type"], row["object_name"], row["target_ddl"]
+                        try:
+                            cursor = target_conn.cursor()
+                            cursor.execute(ddl)
+                            cursor.close()
+                            target_conn.commit()
+                            mark_translation_applied(meta_conn, row["id"], "APPLIED")
+                            results.append({"object_type": object_type, "object_name": object_name, "status": "APPLIED"})
+                        except Exception as exc:
+                            target_conn.rollback()
+                            exc_str = str(exc)
+                            mark_translation_applied(meta_conn, row["id"], "APPLY_FAILED", exc_str)
+                            results.append(
+                                {"object_type": object_type, "object_name": object_name, "status": "APPLY_FAILED", "error": exc_str}
+                            )
+                finally:
+                    target_conn.close()
         
         applied_count = sum(1 for r in results if r["status"] == "APPLIED")
-        pending_count = sum(1 for r in results if r["status"] == "PENDING_MANUAL_REVIEW")
         failed_count = sum(1 for r in results if r["status"] == "APPLY_FAILED")
         
-        detail = f"{applied_count} applied, {pending_count} pending, {failed_count} failed"
+        detail = f"{applied_count} applied, {failed_count} failed"
+        status_level = "SUCCESS" if failed_count == 0 else "PARTIAL"
         trace = add_step(trace, "ApplyManualReviews",
                          "Pending objects applied",
                          detail,
-                         status="SUCCESS" if failed_count == 0 else "PARTIAL")
+                         status=status_level)
         
         logger.info("[job=%s] Applied pending manual review objects: %s", state.job_id, detail)
     except Exception as exc:

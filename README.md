@@ -1,6 +1,6 @@
 # Agentic AI-Powered Database Migration Platform
 
-A production-grade AI-assisted database migration platform supporting **any-to-any** migration between Oracle, MySQL, and PostgreSQL. The system orchestrates end-to-end database migrations using LangGraph, AWS Bedrock, and domain-specific tool adapters (CrackSQL, Apache SeaTunnel, OpenRewrite, Aider, kubectl, Terraform).
+A production-grade AI-assisted database migration platform supporting **any-to-any** migration between Oracle, MySQL, and PostgreSQL. The system orchestrates end-to-end database migrations using LangGraph, AWS Bedrock, and domain-specific tool adapters (CrackSQL, Apache SeaTunnel, kubectl).
 
 ## Project Status
 
@@ -12,9 +12,9 @@ A production-grade AI-assisted database migration platform supporting **any-to-a
 | 3 | Knowledge base & planner agent | ✅ Complete |
 | 4 | Schema & logic translation (CrackSQL + Bedrock) | ✅ Complete, live-verified |
 | 5 | Data migration (Apache SeaTunnel bulk load + DDL apply) | ✅ Complete, live-verified |
-| 6 | Application code refactoring (OpenRewrite/Aider) | 🔲 Deferred — future extension |
+| 6 | Application code refactoring | 🔲 Deferred — future extension |
 | 7 | Validation & reconciliation (checksum adapter) + Test phase | ✅ Complete — checksum/object-existence validation and a real `Test` node (schema compatibility, missing objects, referential integrity, performance smoke checks) are wired into the graph |
-| 8 | Deployment, cutover & rollback (Terraform/Kubernetes/automatic rollback) | ✅ Complete — production Terraform modules (VPC/EKS/RDS/IAM), Helm charts, DeploymentAgent with 7-step safe cutover + automatic rollback |
+| 8 | Deployment, cutover & rollback | 🔲 Deferred — future extension (full AWS infrastructure layer) |
 | 9 | Observability, security & CI/CD hardening (LangSmith tracing, Grafana dashboards, 6-stage pipeline, Secrets Manager, network policies) | ✅ Complete — GitHub Actions 6-stage pipeline, LangSmith tracing for all agents/tools, 4 Grafana dashboards, Secrets Manager async client, pod security policies, network policies |
 | 10 | Final integration, docs & demo (E2E tests, deployment guide, performance testing, video script) | ✅ Complete — E2E workflow test for all 9 phases, AWS deployment guide, known issues documentation, performance testing suite, video recording script |
 
@@ -438,7 +438,7 @@ Neither of the above requires touching `orchestrator/graph.py` — see [docs/arc
 - **LangGraph State Machine**: Orchestrates migration phases with deterministic state management and Postgres-backed checkpointing (pause/resume across restarts)
 - **Human-in-the-Loop**: Approval gates at critical points with audit trails
 - **Dialect Symmetry**: Source and target DBs use the same dialect interface — any of Oracle/MySQL/PostgreSQL can be either side
-- **Tool Adapters**: Pluggable external tools (CrackSQL, SeaTunnel, OpenRewrite, Aider, kubectl, Terraform)
+- **Tool Adapters**: Pluggable external tools (CrackSQL, SeaTunnel, kubectl)
 - **Knowledge Base**: RAG-powered migration rules and patterns backed by PGVector
 - **Observability**: Tracing with LangSmith, metrics with Prometheus, dashboards in Grafana
 - **Table DDL is not translated**: table creation is delegated to SeaTunnel's JDBC sink auto-schema (`schema_save_mode`); the Schema Agent translates everything else (views, procedures, functions, triggers, foreign keys)

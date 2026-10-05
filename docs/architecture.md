@@ -35,7 +35,7 @@
 - **Bounded automatic recovery, not infinite loops**: any LLM call or tool-adapter invocation retries automatically on failure, capped at **3 attempts**, before escalating to a human review interrupt (see [§6.1](#61-failure-handling--retry-policy)).
 - **Deterministic validation over LLM trust**: schema/code translation may use LLM reasoning, but data correctness is always confirmed by deterministic checksum/reconciliation code.
 - **Everything observable**: every agent call, tool invocation, and state transition is traced (LangSmith) and every infra/runtime metric is scraped (Prometheus/Grafana).
-- **Infra as code, deploy as code**: Terraform provisions cloud resources; Kubernetes manifests/Helm charts describe runtime; nothing is clicked manually.
+- **Infra as code, deploy as code**: Full infrastructure automation (future extension) — currently supports kubectl for application deployment.
 
 ---
 
@@ -110,11 +110,10 @@ flowchart TB
         T1[Schema Extractor / DDL Parser Adapter]
         T2[CrackSQL Adapter]
         T3[SeaTunnel Zeta Adapter]
-        T4[OpenRewrite Adapter]
-        T5[Aider Adapter]
+
         T6[Checksum/Reconciliation Adapter]
         T7[kubectl / Helm Adapter]
-        T8[Terraform Adapter]
+        T8[Terraform Adapter (Future)]
     end
 
     subgraph AI Services
@@ -130,7 +129,7 @@ flowchart TB
     end
 
     subgraph Infra Layer
-        TF[Terraform: VPC/EKS/RDS/Aurora]
+        TF[Infrastructure (Future): VPC/EKS/RDS/Aurora]
         K8s[EKS Cluster: App Pods, Old + New]
     end
 
@@ -202,8 +201,7 @@ migration-platform/
 │   ├── schema_extractor_adapter/  # generates schema.sql per dialect, parses via SQL/DDL parser
 │   ├── cracksql_adapter/
 │   ├── seatunnel_adapter/
-│   ├── openrewrite_adapter/
-│   ├── aider_adapter/
+
 │   ├── checksum_adapter/
 │   ├── kubectl_adapter/
 │   └── terraform_adapter/
@@ -242,9 +240,9 @@ migration-platform/
 | 2 | **Assessment Agent** | Discovery & schema analysis, dependency graph | Code-generated `schema.sql` (native per-dialect DDL export) + SQL/DDL parser (e.g. sqlglot) | `schema_extractor_adapter` |
 | 3 | **Schema Agent** | DDL / stored procedure / trigger / view translation, source→target dialect | CrackSQL (hybrid AST + LLM) | `cracksql_adapter` |
 | 4 | **Data Agent** | Bulk historical load + streaming CDC | Apache SeaTunnel (Zeta engine) | `seatunnel_adapter` |
-| 5 | **Code Agent** | Application refactor: ORM/JDBC swap (Java/Spring), raw SQL/SQLAlchemy rewrite (C++/Python) | OpenRewrite (AST) + Aider (LLM CLI) | `openrewrite_adapter`, `aider_adapter` |
+| 6 | **Code Agent** | Application refactor (future extension) | — | — |
 | 6 | **Validation Agent** | Row counts, checksums, referential integrity, aggregate comparisons | Custom Python (Pandas/PySpark hashing) | `checksum_adapter` |
-| 7 | **Deployment Agent** | Cutover rollout + automatic rollback on failure | kubectl (rolling update, `rollout undo`), Terraform (infra provisioning) | `kubectl_adapter`, `terraform_adapter` |
+| 7 | **Deployment Agent** | Application deployment + validation | kubectl (rolling update, `rollout undo`) | `kubectl_adapter` |
 
 Each adapter implements the same contract so agents call adapters generically:
 
@@ -260,8 +258,7 @@ classDiagram
     class SchemaExtractorAdapter
     class CrackSQLAdapter
     class SeaTunnelAdapter
-    class OpenRewriteAdapter
-    class AiderAdapter
+
     class ChecksumAdapter
     class KubectlAdapter
     class TerraformAdapter
@@ -269,8 +266,7 @@ classDiagram
     BaseToolAdapter <|.. SchemaExtractorAdapter
     BaseToolAdapter <|.. CrackSQLAdapter
     BaseToolAdapter <|.. SeaTunnelAdapter
-    BaseToolAdapter <|.. OpenRewriteAdapter
-    BaseToolAdapter <|.. AiderAdapter
+
     BaseToolAdapter <|.. ChecksumAdapter
     BaseToolAdapter <|.. KubectlAdapter
     BaseToolAdapter <|.. TerraformAdapter
@@ -294,7 +290,7 @@ stateDiagram-v2
     HumanReviewPlan --> [*]: Reject
 
     Transform --> Generate: CrackSQL DDL/SP/Trigger translation
-    Generate --> CodeRefactor: OpenRewrite / Aider
+    Generate --> CodeRefactor: (future extension)
     CodeRefactor --> DataMigrate: SeaTunnel bulk load + CDC
 
     DataMigrate --> Validate: Checksum reconciliation
@@ -469,8 +465,7 @@ sequenceDiagram
 sequenceDiagram
     participant O as Orchestrator
     participant CA as Code Agent
-    participant OR as OpenRewrite Adapter
-    participant AI as Aider Adapter
+
     participant Repo as App Source Repo
 
     O->>CA: refactor(target_dialect, app_stack)
@@ -635,7 +630,7 @@ erDiagram
 
 ## 11. Deployment Architecture
 
-Terraform provisions cloud infrastructure; Kubernetes (EKS) runs the platform and the migrated application; both are treated as production-grade from day one per requirements.
+Kubernetes (kubectl) runs the migrated application deployment; full infrastructure automation (Terraform for VPC/EKS/RDS) is a future extension.
 
 ```mermaid
 flowchart TB
@@ -686,9 +681,7 @@ flowchart TB
     LFPod --> Orchpod
 ```
 
-Dialect assignment to `RDS_A`/`RDS_B` is per-job, driven by the `DialectPair` in `MigrationState` — the same Terraform module (`rds-instance`) is parameterized by engine type rather than having fixed "source" and "target" modules.
-
-- Terraform modules: `network`, `eks`, `rds-instance` (parameterized: oracle/mysql/postgres), `metadata-db`, `iam`.
+Dialect assignment to `RDS_A`/`RDS_B` is per-job, driven by the `DialectPair` in `MigrationState`.
 - Helm charts per app under `infra/k8s/`; the Deployment Agent calls `kubectl`/`helm` scoped to `ns-app` only (least privilege — cannot touch `ns-platform`).
 
 ---
@@ -706,7 +699,7 @@ flowchart LR
     Push --> IntegrationEnv[Deploy to Staging Namespace]
     IntegrationEnv --> E2E[E2E Migration Test\n small sample DB]
     E2E --> Approval{Manual Approval Gate}
-    Approval -->|Approve| Prod[Terraform Apply + Helm Upgrade: Prod]
+    Approval -->|Approve| Prod[Application Deployment: Prod]
     Approval -->|Reject| Stop[Pipeline Halted]
 ```
 
@@ -738,7 +731,7 @@ Every LLM call (Bedrock Nova Pro / Titan) is wrapped with a LangSmith trace capt
 - **Least privilege**: Deployment Agent's Kubernetes service account is scoped via RBAC to only the `target-application` namespace; it cannot modify `migration-platform` or `observability` namespaces.
 - **Secrets management**: DB credentials and Bedrock IAM roles are never stored in state or logs — sourced from AWS Secrets Manager / IRSA (IAM Roles for Service Accounts), injected at runtime.
 - **Input validation boundary**: FastAPI validates all job configuration (connection strings, dialect names) against an allow-list before any adapter executes — prevents injection into generated SQL/kubectl commands.
-- **SQL/command injection**: CrackSQL and checksum adapters use parameterized queries; `kubectl`/`terraform` adapters build commands from typed config objects, never raw string interpolation.
+- **SQL/command injection**: CrackSQL and checksum adapters use parameterized queries; `kubectl` adapter builds commands from typed config objects, never raw string interpolation.
 - **Audit trail**: every approval, rejection, and rollback is immutably logged (`APPROVAL_RECORD`, checkpoint history) for compliance review.
 - **Network isolation**: source and target DBs live in private subnets; only the orchestrator pods have security-group access.
 - **LLM output as untrusted input**: LLM-suggested DDL/code diffs are never auto-applied — they pass through the human approval gate (or, at minimum, automated test/validation) before merge/execution.
@@ -772,7 +765,7 @@ The rule of thumb: **agents change when workflow phases change; adapters change 
 
 This section tracks which parts of the design above are real, working code vs. still a stub/placeholder, as of 2026-10-05. Kept up to date so this doc stays trustworthy rather than purely aspirational.
 
-**Overall Status**: All 10 phases complete ✅. Phases 0-5 and 7-10 are production-ready, fully tested, and deployed. Phase 6 (Code Agent) is intentionally deferred as a future extension.
+**Overall Status**: Phases 0-5 and 7 complete ✅. Phases 1-5 and 7 are production-ready, fully tested. Phase 6 (Code Agent) and Phase 8 (Infrastructure automation) are intentionally deferred as future extensions. Phase 9 observability and Phase 10 documentation are planned for future releases.
 
 ### ✅ Implemented
 
