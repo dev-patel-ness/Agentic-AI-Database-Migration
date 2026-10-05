@@ -92,6 +92,25 @@ def test_sanitize_target_ddl_maps_source_schema_to_target_schema_for_postgresql(
     assert "SAMPLE_USER" not in result
 
 
+def test_sanitize_target_ddl_requotes_bare_identifiers_for_postgresql():
+    # CrackSQL quotes+preserves case in a view's own declaration but leaves
+    # bare identifiers inside the SELECT body unquoted -- those fold to
+    # lowercase in Postgres and fail to resolve against the case-preserved
+    # quoted tables SeaTunnel actually creates ("relation ... does not exist").
+    ddl = (
+        'CREATE OR REPLACE VIEW "sample"."ACTIVE_EMPLOYEES" ("EMPLOYEE_ID") AS '
+        "SELECT employee_id FROM employees WHERE is_active = 'Y'"
+    )
+    case_map = {"employees": "EMPLOYEES", "employee_id": "EMPLOYEE_ID"}
+
+    result = _sanitize_target_ddl(ddl, "postgresql", identifier_case_map=case_map)
+
+    assert 'FROM "EMPLOYEES"' in result
+    assert 'SELECT "EMPLOYEE_ID"' in result
+    # Already-quoted identifiers in the view's own declaration are untouched
+    assert '"sample"."ACTIVE_EMPLOYEES" ("EMPLOYEE_ID")' in result
+
+
 def test_translate_schema_success_high_confidence():
     discovery = _discovery_with(
         [{"object_type": "view", "name": "v1", "schema": "public", "definition": "CREATE VIEW v1 AS SELECT 1"}]
