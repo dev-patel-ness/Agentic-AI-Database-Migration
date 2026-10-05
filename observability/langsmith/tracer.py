@@ -29,6 +29,7 @@ import functools
 import logging
 import os
 import time
+from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
@@ -229,6 +230,7 @@ class LangSmithTracer:
         if self.client is None:
             return fn(*args, **kwargs)
 
+        start_time = datetime.now(timezone.utc)
         start = time.perf_counter()
         error: str | None = None
         result: Any = None
@@ -256,6 +258,8 @@ class LangSmithTracer:
                 tags=self._build_tags(run_tags, extra_metadata),
                 metadata=run_meta,
                 error=error,
+                start_time=start_time,
+                outputs=result if error is None else None,
             )
 
     async def _run_async(
@@ -274,6 +278,7 @@ class LangSmithTracer:
         if self.client is None:
             return await fn(*args, **kwargs)
 
+        start_time = datetime.now(timezone.utc)
         start = time.perf_counter()
         error: str | None = None
         result: Any = None
@@ -301,6 +306,8 @@ class LangSmithTracer:
                 tags=self._build_tags(run_tags, extra_metadata),
                 metadata=run_meta,
                 error=error,
+                start_time=start_time,
+                outputs=result if error is None else None,
             )
 
     def _submit_run(
@@ -310,8 +317,11 @@ class LangSmithTracer:
         tags: list[str],
         metadata: dict[str, Any],
         error: str | None,
+        start_time: datetime,
+        outputs: Any = None,
     ) -> None:
         """Fire-and-forget: post a completed run to LangSmith."""
+        end_time = datetime.now(timezone.utc)
         try:
             self.client.create_run(
                 name=name,
@@ -320,10 +330,14 @@ class LangSmithTracer:
                 tags=tags,
                 metadata=metadata,
                 error=error,
+                inputs={},
+                outputs=outputs if isinstance(outputs, dict) else ({"result": repr(outputs)} if outputs is not None else None),
+                start_time=start_time,
+                end_time=end_time,
             )
         except Exception as exc:
             # Tracing must never break the migration workflow.
-            logger.debug("LangSmith run submission failed (non-fatal): %s", exc)
+            logger.warning("LangSmith run submission failed (non-fatal): %s", exc)
 
     @staticmethod
     def _build_tags(

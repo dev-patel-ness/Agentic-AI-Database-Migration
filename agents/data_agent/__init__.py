@@ -17,11 +17,63 @@ from typing import Any, Optional
 
 from agents.data_agent.metadata_store import metadata_connection, save_data_migration_result
 from agents.schema_agent import apply_schema_translations
-from dialects.connections import default_namespace
+from dialects import get_dialect
+from dialects.connections import connect as _connect, default_namespace
 from orchestrator.state import DataMigrationResult, DiscoveryResult
 from tool_adapters.seatunnel_adapter import SeaTunnelAdapter
 
 logger = logging.getLogger(__name__)
+
+
+def _restore_primary_keys(
+    job_id: str,
+    tables: list[dict[str, Any]],
+    target_dialect: str,
+    target_connection: dict[str, Any],
+    target_namespace: str,
+) -> None:
+    """SeaTunnel's JDBC sink auto-creates each target table from the source
+    query's JDBC result-set metadata (`generate_sink_sql`/`schema_save_mode=
+    CREATE_SCHEMA_WHEN_NOT_EXIST`) -- a plain SELECT result set carries no
+    primary-key info, so those auto-created tables land with *no* primary
+    key/index at all. Left as-is, every foreign key referencing one of them
+    fails (MySQL: 'Missing index for constraint ... in the referenced
+    table'). Re-apply each table's PK (already captured during Discover) now
+    that the tables exist, before the Schema Agent applies foreign keys.
+    """
+    table_pks = {
+        entry["name"]: [c["name"] for c in entry.get("columns", []) if c.get("is_primary_key")]
+        for entry in tables
+    }
+    table_pks = {name: cols for name, cols in table_pks.items() if cols}
+    if not table_pks:
+        return
+
+    dialect = get_dialect(target_dialect)
+    conn = _connect(target_dialect, target_connection)
+    try:
+        cursor = conn.cursor()
+        for table_name, pk_columns in table_pks.items():
+            quoted_table = dialect.quote_identifier(table_name)
+            quoted_cols = ", ".join(dialect.quote_identifier(c) for c in pk_columns)
+            ddl = (
+                f"ALTER TABLE {target_namespace}.{quoted_table} "
+                f"ADD PRIMARY KEY ({quoted_cols})"
+                if target_dialect == "mysql"
+                else f"ALTER TABLE {quoted_table} ADD PRIMARY KEY ({quoted_cols})"
+            )
+            try:
+                cursor.execute(ddl)
+                conn.commit()
+            except Exception as exc:
+                conn.rollback()
+                # Already has one (replay/retry) -- not fatal, FKs will just work.
+                logger.warning(
+                    "job=%s: failed to restore primary key on table %s: %s", job_id, table_name, exc
+                )
+        cursor.close()
+    finally:
+        conn.close()
 
 
 def _topological_sort_tables(
@@ -142,6 +194,8 @@ def migrate_data(
             save_data_migration_result(
                 conn, job_id, table_name, rows_read, rows_written, "SUCCESS", result.execution_time_seconds
             )
+
+    _restore_primary_keys(job_id, tables, target_dialect, target_connection, target_namespace)
 
     ddl_applications = apply_schema_translations(
         job_id, target_dialect, target_connection, manual_review_objects

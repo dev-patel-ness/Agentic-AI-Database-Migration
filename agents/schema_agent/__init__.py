@@ -31,12 +31,16 @@ logger = logging.getLogger(__name__)
 # relying on CrackSQL for syntax noise that isn't a real translation problem.
 _ORACLE_NOISE_KEYWORDS_RE = re.compile(r"\b(EDITIONABLE|NONEDITIONABLE|FORCE)\b\s*", re.IGNORECASE)
 
-# CrackSQL preserves Oracle's uppercase identifiers inside double quotes
-# (e.g. "DEPARTMENTS", "MANAGER_ID"), but SeaTunnel's JDBC sink creates
-# target Postgres tables/columns unquoted -- which Postgres folds to
-# lowercase. Left as-is, any translated DDL referencing those identifiers
-# (views, triggers, foreign keys) fails with "relation ... does not exist".
-_QUOTED_IDENTIFIER_RE = re.compile(r'"([^"]+)"')
+# NOTE: previously this module also force-lowercased every quoted identifier
+# here, on the assumption that SeaTunnel's JDBC sink creates target Postgres
+# tables/columns unquoted (which Postgres folds to lowercase). Verified
+# against an actual run: generate_sink_sql=true quotes and preserves the
+# exact catalog-original case (e.g. Oracle's "EMPLOYEES" lands as the quoted,
+# mixed/upper-case "EMPLOYEES", not lowercase "employees"). CrackSQL's
+# translated DDL already carries that same original-case identifier, so
+# folding it to lowercase made the DDL reference a table that doesn't exist
+# ("relation ... does not exist") -- removed; only the schema name (which
+# dialects/connections.py creates lowercase/unquoted) needs remapping.
 
 
 def _strip_oracle_noise(ddl: str) -> str:
@@ -49,22 +53,60 @@ def _strip_oracle_noise(ddl: str) -> str:
     return re.sub(r"[ \t]+", " ", cleaned)
 
 
+def _build_identifier_case_map(discovery: DiscoveryResult) -> dict[str, str]:
+    """Lowercase name -> catalog-original-case name, for every table and
+    column discovered. CrackSQL quotes+preserves case in a translated
+    object's own declaration (e.g. CREATE VIEW "ACTIVE_EMPLOYEES" ("EMPLOYEE_ID", ...))
+    but leaves bare/unquoted identifiers inside the SELECT body as-is --
+    those need the same case restored so they resolve against the
+    case-preserved quoted tables SeaTunnel actually creates (see
+    _sanitize_target_ddl)."""
+    case_map: dict[str, str] = {}
+    for entry in discovery.object_catalog:
+        if entry.get("object_type") != "table":
+            continue
+        name = entry.get("name")
+        if name:
+            case_map[name.lower()] = name
+        for column in entry.get("columns") or []:
+            column_name = column.get("name")
+            if column_name:
+                case_map[column_name.lower()] = column_name
+    return case_map
+
+
+def _requote_bare_identifiers(ddl: str, identifier_case_map: dict[str, str]) -> str:
+    """Quote-wrap bare (unquoted) occurrences of known table/column names with
+    their catalog-original case, leaving already-quoted identifiers alone."""
+    if not identifier_case_map or not ddl:
+        return ddl
+    names = sorted(identifier_case_map, key=len, reverse=True)
+    pattern = re.compile(
+        r'(?<!")\b(' + "|".join(re.escape(name) for name in names) + r')\b(?!")',
+        re.IGNORECASE,
+    )
+    return pattern.sub(lambda m: f'"{identifier_case_map[m.group(0).lower()]}"', ddl)
+
+
 def _sanitize_target_ddl(
     ddl: str,
     target_dialect: str,
     source_schema: Optional[str] = None,
     target_schema: Optional[str] = None,
+    identifier_case_map: Optional[dict[str, str]] = None,
 ) -> str:
     """Strip Oracle-only cosmetic DDL keywords when they leak through to a
     non-Oracle target, map source schema name to target schema name, fold
-    quoted identifiers to match target's case conventions, and unescape JSON
-    escape sequences (which CrackSQL may return in translated DDL).
+    and unescape JSON escape sequences (which CrackSQL may return in
+    translated DDL).
     
     Args:
         ddl: The translated DDL to sanitize
         target_dialect: The target dialect (e.g., 'postgresql', 'oracle')
         source_schema: The source schema name (e.g., 'SAMPLE_USER') to replace
         target_schema: The target schema name (e.g., 'sample') to replace with
+        identifier_case_map: lowercase table/column name -> catalog-original
+            case, used to re-quote bare identifiers left unquoted by CrackSQL
     """
     if target_dialect == "oracle" or not ddl:
         return ddl
@@ -75,8 +117,9 @@ def _sanitize_target_ddl(
     
     cleaned = _strip_oracle_noise(cleaned)
     if target_dialect == "postgresql":
-        # Map source schema name to target schema name BEFORE case-folding
-        # so we can match the original case from the source dialect
+        # Map source schema name to target schema name (schema names are
+        # created lowercase/unquoted by dialects/connections.py, unlike
+        # table/column identifiers which SeaTunnel creates case-preserved).
         if source_schema and target_schema:
             # Replace quoted schema names: "SAMPLE_USER"."table" → "sample"."table"
             # Use case-insensitive match to handle UPPERCASE, lowercase, or MixedCase
@@ -86,8 +129,12 @@ def _sanitize_target_ddl(
                 cleaned,
                 flags=re.IGNORECASE,
             )
-        # AFTER schema mapping, fold all remaining quoted identifiers to lowercase
-        cleaned = _QUOTED_IDENTIFIER_RE.sub(lambda m: f'"{m.group(1).lower()}"', cleaned)
+        # CrackSQL quotes+preserves case in an object's own declaration (e.g.
+        # CREATE VIEW "ACTIVE_EMPLOYEES" ("EMPLOYEE_ID", ...)) but leaves bare
+        # identifiers inside the body (e.g. "FROM employees") unquoted --
+        # those fold to lowercase in Postgres and fail to resolve against the
+        # case-preserved quoted tables SeaTunnel actually creates. Restore it.
+        cleaned = _requote_bare_identifiers(cleaned, identifier_case_map or {})
     elif target_dialect == "mysql" and source_schema:
         # MySQL's "schema" IS the database, already selected via the target
         # connection -- a literal "sample.table" qualifier carried over from
@@ -131,6 +178,7 @@ def translate_schema(
     translated_objects: list[dict[str, Any]] = []
     confidences: list[float] = []
     low_confidence_objects: list[str] = []
+    identifier_case_map = _build_identifier_case_map(discovery)
 
     with metadata_connection() as conn:
         for entry in discovery.object_catalog:
@@ -238,7 +286,7 @@ def translate_schema(
                 source_schema = entry.get("schema")  # catalog key is "schema", not "schema_name"
                 target_schema = target_connection.get("schema_name") if target_connection else None
                 translated_sql = _sanitize_target_ddl(
-                    translated_sql, target_dialect, source_schema, target_schema
+                    translated_sql, target_dialect, source_schema, target_schema, identifier_case_map
                 )
             confidence = result.confidence_score
             status = "SUCCESS" if translated_sql else "FAILED"

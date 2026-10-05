@@ -54,18 +54,17 @@ def test_translate_schema_strips_oracle_noise_keywords_from_source_ddl_before_ad
     assert "FORCE" not in sent_sql
 
 
-def test_sanitize_target_ddl_folds_quoted_identifiers_to_lowercase_for_postgresql():
-    # CrackSQL preserves Oracle's uppercase quoted identifiers, but SeaTunnel
-    # creates target Postgres tables/columns unquoted (folded lowercase) --
-    # the translated FK DDL must match or "ALTER TABLE" fails at apply time.
+def test_sanitize_target_ddl_preserves_quoted_identifier_case_for_postgresql():
+    # SeaTunnel's JDBC sink (generate_sink_sql=true) quotes and preserves the
+    # exact catalog-original case when auto-creating target tables/columns --
+    # e.g. Oracle's "EMPLOYEES" lands as quoted "EMPLOYEES", not lowercase
+    # "employees". The translated FK DDL must keep matching case or "ALTER
+    # TABLE" fails at apply time with "relation ... does not exist".
     ddl = 'ALTER TABLE "DEPARTMENTS" ADD CONSTRAINT "FK_X" FOREIGN KEY ( "MANAGER_ID" ) REFERENCES "EMPLOYEES" ( "EMPLOYEE_ID" )'
 
     result = _sanitize_target_ddl(ddl, "postgresql")
 
-    assert result == (
-        'ALTER TABLE "departments" ADD CONSTRAINT "fk_x" FOREIGN KEY ( "manager_id" ) '
-        'REFERENCES "employees" ( "employee_id" )'
-    )
+    assert result == ddl
 
 
 def test_sanitize_target_ddl_leaves_oracle_target_untouched():
@@ -76,8 +75,10 @@ def test_sanitize_target_ddl_leaves_oracle_target_untouched():
 
 def test_sanitize_target_ddl_maps_source_schema_to_target_schema_for_postgresql():
     # When translating from Oracle to Postgres, schema names must be mapped:
-    # Oracle: SAMPLE_USER.ACTIVE_EMPLOYEES → Postgres: sample.active_employees
-    # Schema mapping happens BEFORE case-folding so we can match the original case
+    # Oracle: SAMPLE_USER.ACTIVE_EMPLOYEES → Postgres: sample.ACTIVE_EMPLOYEES
+    # (schema names are created lowercase/unquoted by dialects/connections.py,
+    # but table/column identifier case is left as-is -- see the preserves-case
+    # test above.)
     ddl = 'CREATE OR REPLACE VIEW "SAMPLE_USER"."ACTIVE_EMPLOYEES" ("ID") AS SELECT id FROM "SAMPLE_USER"."EMPLOYEES"'
 
     result = _sanitize_target_ddl(
@@ -85,8 +86,8 @@ def test_sanitize_target_ddl_maps_source_schema_to_target_schema_for_postgresql(
     )
 
     # Schema should be mapped to lowercase target schema
-    assert '"sample"."active_employees"' in result
-    assert '"sample"."employees"' in result
+    assert '"sample"."ACTIVE_EMPLOYEES"' in result
+    assert '"sample"."EMPLOYEES"' in result
     # Original schema name should not appear
     assert "SAMPLE_USER" not in result
 
@@ -151,7 +152,7 @@ def test_translate_schema_maps_catalog_schema_key_to_target_schema():
         )
 
     translated_ddl = translation.translated_objects[0]["translated_ddl"]
-    assert '"sample"."active_employees"' in translated_ddl
+    assert '"sample"."ACTIVE_EMPLOYEES"' in translated_ddl
     assert "SAMPLE_USER" not in translated_ddl
 
 
