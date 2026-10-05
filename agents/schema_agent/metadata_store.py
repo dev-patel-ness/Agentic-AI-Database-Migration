@@ -58,19 +58,33 @@ def save_translation_result(
     )
 
 
-def fetch_applicable_translations(conn: psycopg.Connection, job_id: str) -> list[dict[str, Any]]:
+def fetch_applicable_translations(conn: psycopg.Connection, job_id: str, include_pending_manual_review: bool = False) -> list[dict[str, Any]]:
     """Successfully-translated, not-yet-applied non-table objects for this job
     (Phase 5's DDL-application step -- SKIPPED_TABLE/ERROR/NO_SOURCE_DDL rows
-    and rows with no translated DDL text are never eligible)."""
+    and rows with no translated DDL text are never eligible).
+    
+    Args:
+        conn: database connection
+        job_id: migration job ID
+        include_pending_manual_review: if True, also fetch objects marked as PENDING_MANUAL_REVIEW
+                                       (used by ApplyManualReviews phase after human approval)
+    """
+    if include_pending_manual_review:
+        # Fetch objects that are either not yet applied OR were marked pending for manual review
+        status_condition = "AND (tr.applied_status IS NULL OR tr.applied_status = 'PENDING_MANUAL_REVIEW')"
+    else:
+        # Default: only fetch objects that have never been applied
+        status_condition = "AND tr.applied_status IS NULL"
+    
     cur = conn.execute(
-        """
+        f"""
         SELECT tr.id, oce.object_type, oce.object_name, tr.target_ddl
         FROM translation_results tr
         JOIN object_catalog_entries oce ON oce.id = tr.source_object_id
         WHERE tr.job_id = %(job_id)s
           AND tr.translation_status = 'SUCCESS'
           AND tr.target_ddl IS NOT NULL
-          AND tr.applied_status IS NULL
+          {status_condition}
         """,
         {"job_id": job_id},
     )
