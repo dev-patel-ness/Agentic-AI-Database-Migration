@@ -35,7 +35,7 @@
 - **Bounded automatic recovery, not infinite loops**: any LLM call or tool-adapter invocation retries automatically on failure, capped at **3 attempts**, before escalating to a human review interrupt (see [§6.1](#61-failure-handling--retry-policy)).
 - **Deterministic validation over LLM trust**: schema/code translation may use LLM reasoning, but data correctness is always confirmed by deterministic checksum/reconciliation code.
 - **Everything observable**: every agent call, tool invocation, and state transition is traced (LangSmith) and every infra/runtime metric is scraped (Prometheus/Grafana).
-- **Infra as code, deploy as code**: Full infrastructure automation (future extension) — currently supports kubectl for application deployment.
+- **Infra as code**: Infrastructure provisioning and management are designed as future extensions; core migration engine is database-agnostic and infra-agnostic.
 
 ---
 
@@ -100,9 +100,7 @@ flowchart TB
         A1[Assessment Agent]
         A2[Schema Agent]
         A3[Data Agent]
-        A4[Code Agent]
         A5[Validation Agent]
-        A6[Deployment Agent]
         A7[Planner Agent]
     end
 
@@ -110,10 +108,7 @@ flowchart TB
         T1[Schema Extractor / DDL Parser Adapter]
         T2[CrackSQL Adapter]
         T3[SeaTunnel Zeta Adapter]
-
         T6[Checksum/Reconciliation Adapter]
-        T7[kubectl / Helm Adapter]
-        T8[Terraform Adapter (Future)]
     end
 
     subgraph AI Services
@@ -129,8 +124,8 @@ flowchart TB
     end
 
     subgraph Infra Layer
-        TF[Infrastructure (Future): VPC/EKS/RDS/Aurora]
-        K8s[EKS Cluster: App Pods, Old + New]
+        TF["Infrastructure: VPC, EKS, RDS, Aurora"]
+        K8s["EKS Cluster: App Pods"]
     end
 
     subgraph Observability Layer
@@ -148,14 +143,9 @@ flowchart TB
     LG --> A1 --> T1 --> SrcDB
     LG --> A2 --> T2
     LG --> A3 --> T3
-    LG --> A4 --> T4
-    LG --> A4 --> T5
     LG --> A5 --> T6
-    LG --> A6 --> T7 --> K8s
-    A6 --> T8 --> TF --> K8s
 
     A2 --> Bedrock
-    A4 --> Bedrock
     A7 --> Bedrock
     A1 --> Embed --> KBV
     A2 --> KBV
@@ -169,7 +159,6 @@ flowchart TB
     LG --> MetaDB
     LG -.-> LF
     FA -.-> LF
-    K8s -.-> Prom --> Graf
     FA -.-> Prom
 ```
 
@@ -192,19 +181,14 @@ migration-platform/
 │   ├── assessment_agent/
 │   ├── schema_agent/
 │   ├── data_agent/
-│   ├── code_agent/
 │   ├── validation_agent/
-│   ├── deployment_agent/
 │   └── planner_agent/
 ├── tool_adapters/                 # Plugin interface: BaseToolAdapter
 │   ├── base.py                    # Abstract adapter contract (run/status/rollback)
 │   ├── schema_extractor_adapter/  # generates schema.sql per dialect, parses via SQL/DDL parser
 │   ├── cracksql_adapter/
 │   ├── seatunnel_adapter/
-
-│   ├── checksum_adapter/
-│   ├── kubectl_adapter/
-│   └── terraform_adapter/
+│   └── checksum_adapter/
 ├── dialects/                      # Source/target dialect plugins
 │   ├── base.py                    # Abstract Dialect contract (type map, SQL grammar hooks)
 │   ├── oracle/                # symmetric: usable as source or target
@@ -239,10 +223,8 @@ migration-platform/
 | 1 | **Planner Agent** | Builds migration plan: sequence, priorities, risk levels, effort, manual-review flags | LLM reasoning + RAG over knowledge base | — (no external tool, pure LangGraph node) |
 | 2 | **Assessment Agent** | Discovery & schema analysis, dependency graph | Code-generated `schema.sql` (native per-dialect DDL export) + SQL/DDL parser (e.g. sqlglot) | `schema_extractor_adapter` |
 | 3 | **Schema Agent** | DDL / stored procedure / trigger / view translation, source→target dialect | CrackSQL (hybrid AST + LLM) | `cracksql_adapter` |
-| 4 | **Data Agent** | Bulk historical load + streaming CDC | Apache SeaTunnel (Zeta engine) | `seatunnel_adapter` |
-| 6 | **Code Agent** | Application refactor (future extension) | — | — |
-| 6 | **Validation Agent** | Row counts, checksums, referential integrity, aggregate comparisons | Custom Python (Pandas/PySpark hashing) | `checksum_adapter` |
-| 7 | **Deployment Agent** | Application deployment + validation | kubectl (rolling update, `rollout undo`) | `kubectl_adapter` |
+| 4 | **Data Agent** | Bulk historical load | Apache SeaTunnel (Zeta engine) | `seatunnel_adapter` |
+| 5 | **Validation Agent** | Row counts, checksums, referential integrity, aggregate comparisons | Custom Python (Pandas/PySpark hashing) | `checksum_adapter` |
 
 Each adapter implements the same contract so agents call adapters generically:
 
@@ -258,25 +240,19 @@ classDiagram
     class SchemaExtractorAdapter
     class CrackSQLAdapter
     class SeaTunnelAdapter
-
     class ChecksumAdapter
-    class KubectlAdapter
-    class TerraformAdapter
 
     BaseToolAdapter <|.. SchemaExtractorAdapter
     BaseToolAdapter <|.. CrackSQLAdapter
     BaseToolAdapter <|.. SeaTunnelAdapter
-
     BaseToolAdapter <|.. ChecksumAdapter
-    BaseToolAdapter <|.. KubectlAdapter
-    BaseToolAdapter <|.. TerraformAdapter
 ```
 
 ---
 
 ## 6. Orchestration: LangGraph State Machine
 
-LangGraph drives the full workflow: **Discover → Analyse → Plan → Transform → Generate → Validate → Test → Approve → Migrate → Verify**. Every human-approval point is a graph **interrupt**; on resume, the graph re-enters exactly where it paused (via the Postgres checkpointer).
+LangGraph drives the full workflow: **Discover → Analyse → Plan → Transform → Validate → Test → Approve**. Every human-approval point is a graph **interrupt**; on resume, the graph re-enters exactly where it paused (via the Postgres checkpointer). Application deployment and infrastructure management are future extensions.
 
 ```mermaid
 stateDiagram-v2
@@ -289,28 +265,17 @@ stateDiagram-v2
     HumanReviewPlan --> Plan: Modify
     HumanReviewPlan --> [*]: Reject
 
-    Transform --> Generate: CrackSQL DDL/SP/Trigger translation
-    Generate --> CodeRefactor: (future extension)
-    CodeRefactor --> DataMigrate: SeaTunnel bulk load + CDC
-
-    DataMigrate --> Validate: Checksum reconciliation
+    Transform --> DataMigrate: CrackSQL DDL/SP/Trigger translation
+    DataMigrate --> Validate: SeaTunnel bulk load + Checksum reconciliation
     Validate --> HumanReviewValidation: report generated
 
     HumanReviewValidation --> Test: Approve
     HumanReviewValidation --> DataMigrate: Modify / retry
     HumanReviewValidation --> [*]: Reject
 
-    Test --> HumanReviewCutover: test report PASS
+    Test --> Done: test report PASS
     Test --> Validate: test report FAIL
 
-    HumanReviewCutover --> Cutover: Approve
-    HumanReviewCutover --> [*]: Reject
-
-    Cutover --> Verify: kubectl rollout (new pods)
-    Verify --> Done: health checks pass
-    Verify --> Rollback: health checks fail / connection errors
-
-    Rollback --> [*]: kubectl rollout undo
     Done --> [*]
 ```
 
@@ -332,10 +297,10 @@ flowchart TD
     Decision -->|Abort| Abort[Job marked ABORTED, audit logged]
 ```
 
-- **Retry limit: 3 automatic attempts** per phase (Transform/Generate translation calls, CodeRefactor LLM calls, DataMigrate/SeaTunnel job errors, Test execution) before the graph stops looping and raises a `HumanReviewFailure` interrupt.
+- **Retry limit: 3 automatic attempts** per phase (Transform/Validate translation calls, DataMigrate/SeaTunnel job errors, Test execution) before the graph stops looping and raises a `HumanReviewFailure` interrupt.
 - `MigrationState.retry_count` (per-phase) is persisted at every checkpoint, so a resumed job does not reset its attempt count after a crash/restart.
 - On `HumanReviewFailure`, the reviewer sees the captured error/exception and can **Retry** (resets `retry_count` to 0 and re-invokes the same phase) or **Abort** (job marked `ABORTED`, same as other reject paths).
-- Applies uniformly to LLM-backed steps (Bedrock calls in Schema/Code/Planner Agents) and deterministic tool calls (SeaTunnel, checksum, kubectl) — only the definition of "failure" differs (LLM: malformed/low-confidence output or API error; tool: non-zero exit code or exception).
+- Applies uniformly to LLM-backed steps (Bedrock calls in Schema/Planner Agents) and deterministic tool calls (SeaTunnel, checksum) — only the definition of "failure" differs (LLM: malformed/low-confidence output or API error; tool: non-zero exit code or exception).
 - The `Test --> Validate: test report FAIL` edge in §6 is a **business-logic** retry (validation legitimately didn't pass) — distinct from this **infrastructure/LLM-call** retry, which caps a test *run's own execution* failures (e.g. runner crash, timeout) at 3 attempts before escalating.
 
 ---
@@ -353,11 +318,9 @@ classDiagram
         +MigrationPlan plan
         +ApprovalRecord[] approvals
         +TranslationResult schema_translation
-        +CodeRefactorResult code_refactor
         +DataMigrationResult data_migration
         +ValidationReport validation
         +TestReport test_report
-        +DeploymentStatus deployment
         +str current_phase
         +str status
         +int retry_count
@@ -459,29 +422,7 @@ sequenceDiagram
     DA-->>O: data_migration
 ```
 
-### 8.4 Application Code Refactoring
-
-```mermaid
-sequenceDiagram
-    participant O as Orchestrator
-    participant CA as Code Agent
-
-    participant Repo as App Source Repo
-
-    O->>CA: refactor(target_dialect, app_stack)
-    alt Java/Spring backend
-        CA->>OR: run(recipe: swap ORM dialect + JDBC driver)
-        OR->>Repo: AST-based rewrite
-        OR-->>CA: OpenRewriteResult (diff, files changed)
-    else C++ / Python microservice
-        CA->>AI: run(prompt: translate raw SQL / SQLAlchemy config)
-        AI->>Repo: LLM-guided code edits
-        AI-->>CA: AiderResult (diff, files changed)
-    end
-    CA-->>O: code_refactor
-```
-
-### 8.5 Validation & Reconciliation
+### 8.4 Validation & Reconciliation
 
 ```mermaid
 sequenceDiagram
@@ -503,33 +444,6 @@ sequenceDiagram
     O->>O: route: PASS -> Test, FAIL -> retry DataMigrate
 ```
 
-### 8.6 Cutover & Rollback
-
-```mermaid
-sequenceDiagram
-    participant O as Orchestrator
-    participant DG as Deployment Agent
-    participant KC as kubectl Adapter
-    participant K8s as EKS Cluster
-    participant VA as Validation Agent
-
-    O->>DG: cutover(job_id)
-    DG->>KC: rollout new pods (new DB driver/endpoint)
-    KC->>K8s: kubectl set env / update ConfigMap
-    K8s-->>KC: new pods healthy
-    KC-->>DG: DeploymentStatus(new pods live)
-    DG->>K8s: terminate legacy pods
-    DG-->>O: deployment=SUCCESS
-
-    alt connection errors detected
-        VA-->>O: post-cutover anomaly
-        O->>DG: rollback(job_id)
-        DG->>KC: kubectl rollout undo
-        KC->>K8s: revert to legacy pods
-        DG-->>O: deployment=ROLLED_BACK
-    end
-```
-
 ---
 
 ## 9. Human-in-the-Loop Approval Flow
@@ -546,9 +460,8 @@ flowchart TD
 
     subgraph Additional Gates
         G1[Post-Validation Gate]
-        G2[Pre-Cutover Gate]
     end
-    Proceed --> G1 --> G2
+    Proceed --> G1
 ```
 
 Each gate persists an `ApprovalRecord` (reviewer, decision, timestamp, comment) into the metadata DB for full audit trail.
@@ -682,7 +595,7 @@ flowchart TB
 ```
 
 Dialect assignment to `RDS_A`/`RDS_B` is per-job, driven by the `DialectPair` in `MigrationState`.
-- Helm charts per app under `infra/k8s/`; the Deployment Agent calls `kubectl`/`helm` scoped to `ns-app` only (least privilege — cannot touch `ns-platform`).
+- Application deployment orchestration (Phase 8 future extension) will coordinate rolling updates and rollback via Helm charts under `infra/k8s/`.
 
 ---
 
@@ -728,13 +641,13 @@ Every LLM call (Bedrock Nova Pro / Titan) is wrapped with a LangSmith trace capt
 
 ## 14. Security Considerations
 
-- **Least privilege**: Deployment Agent's Kubernetes service account is scoped via RBAC to only the `target-application` namespace; it cannot modify `migration-platform` or `observability` namespaces.
+- **Least privilege**: RBAC policies restrict pod access to only required namespaces and resources.
 - **Secrets management**: DB credentials and Bedrock IAM roles are never stored in state or logs — sourced from AWS Secrets Manager / IRSA (IAM Roles for Service Accounts), injected at runtime.
 - **Input validation boundary**: FastAPI validates all job configuration (connection strings, dialect names) against an allow-list before any adapter executes — prevents injection into generated SQL/kubectl commands.
 - **SQL/command injection**: CrackSQL and checksum adapters use parameterized queries; `kubectl` adapter builds commands from typed config objects, never raw string interpolation.
 - **Audit trail**: every approval, rejection, and rollback is immutably logged (`APPROVAL_RECORD`, checkpoint history) for compliance review.
 - **Network isolation**: source and target DBs live in private subnets; only the orchestrator pods have security-group access.
-- **LLM output as untrusted input**: LLM-suggested DDL/code diffs are never auto-applied — they pass through the human approval gate (or, at minimum, automated test/validation) before merge/execution.
+- **LLM output as untrusted input**: LLM-suggested DDL translations are never auto-applied — they pass through the human approval gate (or, at minimum, automated test/validation) before execution.
 
 ---
 
@@ -765,7 +678,7 @@ The rule of thumb: **agents change when workflow phases change; adapters change 
 
 This section tracks which parts of the design above are real, working code vs. still a stub/placeholder, as of 2026-10-05. Kept up to date so this doc stays trustworthy rather than purely aspirational.
 
-**Overall Status**: Phases 0-5 and 7 complete ✅. Phases 1-5 and 7 are production-ready, fully tested. Phase 6 (Code Agent) and Phase 8 (Infrastructure automation) are intentionally deferred as future extensions. Phase 9 observability and Phase 10 documentation are planned for future releases.
+**Overall Status**: Phases 1-5 and 7 (Test) complete ✅. Phases 1-5 and 7 are production-ready, fully tested. Application deployment (Phase 8) and infrastructure automation (Terraform) are intentionally deferred as future extensions.
 
 ### ✅ Implemented
 
@@ -781,22 +694,12 @@ This section tracks which parts of the design above are real, working code vs. s
 | Validation Agent + `checksum_adapter` | Row-count/checksum reconciliation, `ValidationReport`, Prometheus metrics |
 | Human-in-the-loop gates | `HumanReviewPlan` and `HumanReviewValidation` are real interrupts with persisted `ApprovalRecord`s |
 | Test phase (Phase 7) | Real `test_runner.py` with 4 checks: schema_compatibility (from ValidationReport), missing_objects, referential_integrity (FK orphan queries), and performance_smoke (timed COUNT(*) per table, 5s threshold); wired into graph with `Test → Done/Validate` routing per test results |
-| **Deployment Agent (Phase 8)** | Real `deployment.py` orchestrating 7-step safe cutover: infrastructure validation → current state capture → rolling update → rollout completion → pod readiness → DB health check → traffic verification; automatic rollback on any step failure |
-| **Terraform Adapter (Phase 8)** | `tool_adapters/terraform_adapter/terraform.py` with init, plan, apply, destroy, validate, output methods; async subprocess wrappers with JSON output parsing; tfvars security (0o600 perms on Linux, tested) |
-| **kubectl Adapter (Phase 8)** | `tool_adapters/kubectl_adapter/kubectl.py` with get_deployment, set_image, rollout_status, rollout_undo, health checks; typed config objects (no raw string interpolation); async subprocess wrapper |
-| **Infra as code (Terraform, Phase 8)** | 5 modules (VPC, EKS, RDS, IAM/IRSA, outputs) + 330+ lines of variables/locals/data sources; VPC 3-tier (public/private/database subnets), EKS 1.28 with 2 node groups (platform/app), RDS multi-AZ (PostgreSQL/MySQL/Oracle), IRSA for pods |
-| **Kubernetes Helm charts (Phase 8)** | `capstone-platform` (2 replicas, HPA 2-5, network policies, RBAC, PDB) and `capstone-app` (3 replicas, HPA 3-10, pod anti-affinity, network policies, RBAC, PDB) with liveness/readiness probes, resource limits, rolling update strategy |
-| **CI/CD Pipeline (Phase 9)** | 6-stage `.github/workflows/ci.yml` (lint → test → build Docker → vulnerability scan → staging deploy → E2E test → manual approval → prod deploy); unit tests for terraform_adapter, kubectl_adapter, deployment_agent workflows |
-| **LangSmith Observability (Phase 9)** | `observability/langsmith/tracer.py` with `@trace_agent`, `@trace_tool`, `@trace_llm_call` decorators for all agents/tools/LLM calls; captures latency, tokens, cost; integrates with all 7 agents and adapters |
-| **Prometheus Metrics (Phase 9)** | `observability/metrics.py` – validation, retry, throughput, deployment (rollout/rollback success/duration), agent latency/cost, tool adapter success/failure, LLM token usage metrics emitted; local Prometheus scrape endpoint at `http://localhost:8000/metrics` |
-| **Grafana Dashboards (Phase 9)** | 4 pre-built dashboards: Agent Latency & LLM Cost, Tool Success Rate, Pod Health, Deployment Rollout; queryable via Prometheus data source |
-| **Secrets Management (Phase 9)** | `observability/secrets_manager.py` – async SecretsManagerClient for runtime DB/Bedrock credential retrieval; env fallback for local dev; IRSA pod identity for AWS cloud |
-| **Security & Network Policies (Phase 9)** | `infra/k8s/network-policies.yaml` (zero-trust deny-all + whitelist for ns-platform/ns-app); `infra/k8s/pod-security-policy.yaml` (non-root, no privilege escalation, restricted capabilities, RBAC scoping) |
-| **E2E Testing (Phase 10)** | `tests/e2e/test_complete_workflow.py` (450+ lines) orchestrating all 9 phases (1→5, 7→9; Phase 6 deferred) with error handling; E2E tests for phase 8 deployment success/failure/rollback scenarios |
-| **Deployment Guide (Phase 10)** | `docs/DEPLOYMENT_GUIDE.md` (500+ lines) – step-by-step AWS setup: Terraform backend, EKS provisioning, secrets config, observability stack (Prometheus/Grafana), CI/CD, troubleshooting |
-| **Known Issues & Roadmap (Phase 10)** | `docs/KNOWN_ISSUES.md` (400+ lines) documenting 7 known issues with severity, workarounds, and Q1-Q4 2027 roadmap |
-| **Performance Testing Suite (Phase 10)** | `docs/PERFORMANCE_TESTING.md` (400+ lines) with 5 benchmark suites: latency, throughput, memory/CPU, cost, concurrent load |
-| **Demo & Video Script (Phase 10)** | `scripts/demo-live.sh` (300+ lines) interactive AWS demo; `docs/VIDEO_RECORDING_SCRIPT.md` (350+ lines) 7-10 min narration with 7 segments, recording tips, post-processing guide |
+| LangSmith Observability | `observability/langsmith/tracer.py` with `@trace_agent`, `@trace_tool`, `@trace_llm_call` decorators for all agents/tools/LLM calls; captures latency, tokens, cost |
+| Prometheus Metrics | `observability/metrics.py` – validation, retry, throughput, agent latency/cost, tool adapter success/failure, LLM token usage metrics emitted; local Prometheus scrape endpoint at `http://localhost:8000/metrics` |
+| Grafana Dashboards | Pre-built dashboards: Agent Latency & LLM Cost, Tool Success Rate, Migration Throughput |
+| Secrets Management | `observability/secrets_manager.py` – async SecretsManagerClient for runtime DB/Bedrock credential retrieval; env fallback for local dev |
+| E2E Testing | `tests/e2e/test_complete_workflow.py` orchestrating all migration phases (Discovery → Assessment → Planning → Validation → Testing) with error handling |
+| Demo & Video Script | `docs/VIDEO_RECORDING_SCRIPT.md` – comprehensive narration and recording guide |
 
 ### 🔮 Future Extension (designed, not yet built)
 
@@ -805,4 +708,5 @@ These are explicitly scoped in this document and in `plan.md`, but currently exi
 | Area | Current state | What's missing |
 |---|---|---|
 | **CDC streaming** (Data Agent, Phase 5) | Bulk/batch load only (`seatunnel_adapter`) | Streaming change-data-capture after initial bulk load (e.g. Debezium/Kafka CDC pipeline) |
-| **Code Agent** (Phase 6) | Empty `__init__.py` stubs; `CodeRefactor` graph node is a no-op passthrough | ORM/JDBC dialect swap (OpenRewrite AST rewrite) + LLM-guided raw-SQL/SQLAlchemy edits (Aider); intentionally deferred per user request |
+| **Application Deployment** (Phase 8) | Deferred | kubectl/Helm adapters for rolling update, rollout, and automatic rollback on deployment failure |
+| **Infrastructure Automation** (Phase 8) | Deferred | Terraform modules for VPC, EKS, RDS multi-AZ provisioning; automated infrastructure lifecycle management |
