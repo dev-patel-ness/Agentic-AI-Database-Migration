@@ -88,6 +88,16 @@ def _sanitize_target_ddl(
             )
         # AFTER schema mapping, fold all remaining quoted identifiers to lowercase
         cleaned = _QUOTED_IDENTIFIER_RE.sub(lambda m: f'"{m.group(1).lower()}"', cleaned)
+    elif target_dialect == "mysql" and source_schema:
+        # MySQL's "schema" IS the database, already selected via the target
+        # connection -- a literal "sample.table" qualifier carried over from
+        # the source dialect either points at a database that doesn't exist
+        # on the target server or one the migration user has no grants on
+        # (surfaces as a confusing "CREATE VIEW command denied" error rather
+        # than "unknown database"). Strip it so identifiers resolve against
+        # the connected database instead.
+        cleaned = re.sub(rf"`{re.escape(source_schema)}`\.", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(rf"\b{re.escape(source_schema)}\.", "", cleaned, flags=re.IGNORECASE)
     return cleaned
 
 # Views/procedures/triggers/FKs aren't linked by the (table-only) dependency

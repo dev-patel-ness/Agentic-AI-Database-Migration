@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 
 from langgraph.checkpoint.postgres import PostgresSaver
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
@@ -36,6 +37,8 @@ def build_checkpointer_pool(min_size: int = 1, max_size: int = 10) -> Connection
 
 def build_checkpointer(pool: ConnectionPool) -> PostgresSaver:
     """Wrap a connection pool as a LangGraph checkpointer, ensuring its schema exists."""
-    saver = PostgresSaver(pool)
+    # ExecutionStep must be allow-listed or msgpack refuses to deserialize it from checkpoints.
+    serde = JsonPlusSerializer(allowed_msgpack_modules=[("orchestrator.state", "ExecutionStep")])
+    saver = PostgresSaver(pool, serde=serde)
     saver.setup()  # idempotent: creates/migrates checkpoint tables if missing
     return saver

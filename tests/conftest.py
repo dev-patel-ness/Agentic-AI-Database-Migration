@@ -36,3 +36,4 @@ def stub_discovery(monkeypatch):
         lambda job_id, source, target, conn: DiscoveryResult(),
     )
     monkeypatch.setattr("orchestrator.graph.connect", lambda dialect, config: MagicMock())
+    monkeypatch.setattr("orchestrator.graph.reset_target_namespace", lambda dialect, config: None)

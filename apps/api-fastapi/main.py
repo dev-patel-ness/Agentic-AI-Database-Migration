@@ -14,12 +14,19 @@ import os
 import threading
 import uuid
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, Literal, Optional
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from langgraph.types import Command
 from pydantic import BaseModel, SecretStr
+
+# Must run before any orchestrator/agent/tool_adapter imports below, since
+# those can construct boto3 clients (Bedrock, S3) at import time that read
+# AWS_* env vars from the process environment.
+load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 from orchestrator import connection_registry
 from orchestrator.checkpointer import build_checkpointer, build_checkpointer_pool

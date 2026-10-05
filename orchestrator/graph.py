@@ -26,10 +26,11 @@ from agents.planner_agent import build_plan
 from agents.schema_agent import translate_schema
 from agents.validation_agent import validate_data
 from agents.validation_agent.test_runner import run_tests
-from dialects.connections import default_namespace, connect
+from dialects.connections import default_namespace, connect, reset_target_namespace
 from tool_adapters.kubectl_adapter import KubectlAdapter
 from tool_adapters.terraform_adapter import TerraformAdapter
 from observability import metrics
+from observability.langsmith.tracer import get_tracer
 from orchestrator import connection_registry
 from orchestrator.execution_trace import add_step
 from orchestrator.retry import with_retry
@@ -64,6 +65,41 @@ def _resume_field(decision: Any, key: str, default: str) -> str:
 
 
 # --- Discovery / planning ----------------------------------------------------
+
+
+def _prepare_target(state: MigrationState) -> dict[str, Any]:
+    """Wipe the target namespace clean before anything else runs, so a job's
+    target always starts empty regardless of what a previous job left behind
+    (plan.md/architecture.md expect every run's results to reflect a fresh
+    target, not leftovers from reusing the same connection)."""
+    _log_phase(state, "PrepareTarget")
+    connections = connection_registry.get(state.job_id)
+    if connections is None:
+        raise RuntimeError(
+            f"no registered connection config for job {state.job_id} — the API "
+            "process may have restarted before PrepareTarget ran; recreate the job"
+        )
+    _source_connection, target_connection = connections
+
+    trace = add_step(
+        state.execution_trace,
+        "PrepareTarget",
+        "Emptying target namespace",
+        f"Resetting {state.dialects.target} target before migration starts",
+    )
+    reset_target_namespace(state.dialects.target, target_connection)
+    trace = add_step(
+        trace,
+        "PrepareTarget",
+        "Target namespace reset",
+        "Target is now empty",
+        status="SUCCESS",
+    )
+    return {
+        "current_phase": "PrepareTarget",
+        "status": JobStatus.RUNNING.value,
+        "execution_trace": trace,
+    }
 
 
 def _discover(state: MigrationState) -> dict[str, Any]:
@@ -944,6 +980,7 @@ def _rollback(state: MigrationState) -> dict[str, Any]:
 # Nodes wrapping an LLM call or external tool-adapter invocation get the bounded
 # retry policy (architecture.md §6.1); pure in-process/orchestration nodes don't.
 _RETRYABLE_NODES: dict[str, Any] = {
+    "PrepareTarget": _prepare_target,
     "Discover": _discover,
     "Plan": _plan,
     "Transform": _transform,
@@ -955,28 +992,35 @@ _RETRYABLE_NODES: dict[str, Any] = {
 }
 
 
+def _traced(name: str, node_fn: Any) -> Any:
+    """Wrap a node callable with the LangSmith tracer (no-op if tracing is disabled)."""
+    return get_tracer().trace_agent(name)(node_fn)
+
+
 def build_state_graph() -> StateGraph:
     """Assemble the (uncompiled) StateGraph with all nodes/edges from architecture.md §6."""
     graph = StateGraph(MigrationState)
 
-    graph.add_node("Discover", with_retry("Discover", _RETRYABLE_NODES["Discover"]))
-    graph.add_node("Analyse", _analyse)
-    graph.add_node("Plan", with_retry("Plan", _RETRYABLE_NODES["Plan"]))
+    graph.add_node("PrepareTarget", _traced("PrepareTarget", with_retry("PrepareTarget", _RETRYABLE_NODES["PrepareTarget"])))
+    graph.add_node("Discover", _traced("Discover", with_retry("Discover", _RETRYABLE_NODES["Discover"])))
+    graph.add_node("Analyse", _traced("Analyse", _analyse))
+    graph.add_node("Plan", _traced("Plan", with_retry("Plan", _RETRYABLE_NODES["Plan"])))
     graph.add_node("HumanReviewPlan", _human_review_plan)
-    graph.add_node("Transform", with_retry("Transform", _RETRYABLE_NODES["Transform"]))
-    graph.add_node("Generate", with_retry("Generate", _RETRYABLE_NODES["Generate"]))
-    graph.add_node("CodeRefactor", with_retry("CodeRefactor", _RETRYABLE_NODES["CodeRefactor"]))
-    graph.add_node("DataMigrate", with_retry("DataMigrate", _RETRYABLE_NODES["DataMigrate"]))
-    graph.add_node("Validate", _validate)
+    graph.add_node("Transform", _traced("Transform", with_retry("Transform", _RETRYABLE_NODES["Transform"])))
+    graph.add_node("Generate", _traced("Generate", with_retry("Generate", _RETRYABLE_NODES["Generate"])))
+    graph.add_node("CodeRefactor", _traced("CodeRefactor", with_retry("CodeRefactor", _RETRYABLE_NODES["CodeRefactor"])))
+    graph.add_node("DataMigrate", _traced("DataMigrate", with_retry("DataMigrate", _RETRYABLE_NODES["DataMigrate"])))
+    graph.add_node("Validate", _traced("Validate", _validate))
     graph.add_node("HumanReviewValidation", _human_review_validation)
-    graph.add_node("Test", with_retry("Test", _RETRYABLE_NODES["Test"]))
+    graph.add_node("Test", _traced("Test", with_retry("Test", _RETRYABLE_NODES["Test"])))
     graph.add_node("HumanReviewCutover", _human_review_cutover)
-    graph.add_node("Cutover", with_retry("Cutover", _RETRYABLE_NODES["Cutover"]))
-    graph.add_node("Verify", _verify)
+    graph.add_node("Cutover", _traced("Cutover", with_retry("Cutover", _RETRYABLE_NODES["Cutover"])))
+    graph.add_node("Verify", _traced("Verify", _verify))
     graph.add_node("Done", _done)
-    graph.add_node("Rollback", _rollback)
+    graph.add_node("Rollback", _traced("Rollback", _rollback))
 
-    graph.add_edge(START, "Discover")
+    graph.add_edge(START, "PrepareTarget")
+    graph.add_edge("PrepareTarget", "Discover")
     graph.add_edge("Discover", "Analyse")
     graph.add_edge("Analyse", "Plan")
     graph.add_edge("Plan", "HumanReviewPlan")

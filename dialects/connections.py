@@ -76,6 +76,101 @@ def connect(dialect_name: str, connection_config: dict[str, Any]):
     raise ValueError(f"Unsupported dialect: {dialect_name!r}")
 
 
+def reset_target_namespace(dialect_name: str, connection_config: dict[str, Any]) -> None:
+    """Wipe every object out of the target namespace (schema/database/owner)
+    before a job starts, so a run's results always reflect a clean target --
+    never leftovers from a previous migration that used the same connection.
+    Only touches the target namespace; a connection used as *source* in
+    another job is never modified by this (per-job, target-side only).
+    """
+    namespace = default_namespace(dialect_name, connection_config)
+
+    if dialect_name == "postgresql":
+        quoted = '"' + namespace.replace('"', '""') + '"'
+        conn = connect(dialect_name, connection_config)
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(f"DROP SCHEMA IF EXISTS {quoted} CASCADE")
+                cursor.execute(f"CREATE SCHEMA {quoted}")
+            conn.commit()
+        finally:
+            conn.close()
+        return
+
+    if dialect_name == "mysql":
+        import mysql.connector
+
+        quoted = "`" + namespace.replace("`", "``") + "`"
+        # Connect without selecting the target database -- can't DROP
+        # DATABASE while USE'd into it.
+        conn = mysql.connector.connect(
+            host=connection_config.get("host", "localhost"),
+            port=connection_config.get("port", 3306),
+            user=connection_config.get("username", "root"),
+            password=connection_config.get("password", ""),
+        )
+        try:
+            cursor = conn.cursor()
+            cursor.execute(f"DROP DATABASE IF EXISTS {quoted}")
+            cursor.execute(
+                f"CREATE DATABASE {quoted} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+            )
+            conn.commit()
+            cursor.close()
+        finally:
+            conn.close()
+        return
+
+    if dialect_name == "oracle":
+        # No DROP USER privilege expected for the app's own schema user --
+        # drop every object the user owns instead (self-service, no DBA
+        # grant required). WHEN OTHERS THEN NULL per-object so one dependent
+        # object that fails to drop doesn't abort the whole cleanup.
+        conn = connect(dialect_name, connection_config)
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                BEGIN
+                    FOR rec IN (
+                        SELECT object_name, object_type
+                        FROM user_objects
+                        WHERE object_type IN (
+                            'TABLE','VIEW','PACKAGE','PACKAGE BODY','PROCEDURE',
+                            'FUNCTION','TRIGGER','SEQUENCE','TYPE','MATERIALIZED VIEW'
+                        )
+                        ORDER BY DECODE(object_type,
+                            'MATERIALIZED VIEW', 0, 'TRIGGER', 0, 'VIEW', 0,
+                            'PACKAGE BODY', 0, 'PACKAGE', 0, 'FUNCTION', 0,
+                            'PROCEDURE', 0, 'TABLE', 1, 'SEQUENCE', 2, 'TYPE', 2, 3)
+                    )
+                    LOOP
+                        BEGIN
+                            IF rec.object_type = 'TABLE' THEN
+                                EXECUTE IMMEDIATE
+                                    'DROP TABLE "' || rec.object_name || '" CASCADE CONSTRAINTS PURGE';
+                            ELSIF rec.object_type = 'TYPE' THEN
+                                EXECUTE IMMEDIATE 'DROP TYPE "' || rec.object_name || '" FORCE';
+                            ELSE
+                                EXECUTE IMMEDIATE
+                                    'DROP ' || rec.object_type || ' "' || rec.object_name || '"';
+                            END IF;
+                        EXCEPTION
+                            WHEN OTHERS THEN NULL;
+                        END;
+                    END LOOP;
+                END;
+                """
+            )
+            conn.commit()
+            cursor.close()
+        finally:
+            conn.close()
+        return
+
+    raise ValueError(f"Unsupported dialect: {dialect_name!r}")
+
+
 def default_namespace(dialect_name: str, connection_config: dict[str, Any]) -> str:
     """The namespace to use: schema (Postgres), database (MySQL), or owner (Oracle)."""
     if dialect_name == "postgresql":

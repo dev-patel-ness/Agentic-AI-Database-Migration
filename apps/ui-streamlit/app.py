@@ -246,7 +246,7 @@ def _render_plan_summary(plan: dict[str, Any]) -> None:
                     }
                     for r in risk_register
                 ],
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
             )
 
@@ -260,7 +260,7 @@ def _render_discovery(discovery: dict[str, Any]) -> None:
     with st.expander(f"Object catalog ({len(catalog)} objects)"):
         st.dataframe(
             [{"type": e["object_type"], "name": e["name"], "schema": e.get("schema")} for e in catalog],
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -320,7 +320,7 @@ def _render_schema_translation(translation: dict[str, Any]) -> None:
                 }
                 for o in objects
             ],
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -329,11 +329,11 @@ def _render_data_migration(data_migration: dict[str, Any]) -> None:
     st.metric("Rows moved", data_migration.get("rows_moved", 0))
     tables = data_migration.get("tables") or []
     with st.expander(f"Per-table migration results ({len(tables)})"):
-        st.dataframe(tables, use_container_width=True, hide_index=True)
+        st.dataframe(tables, width="stretch", hide_index=True)
     ddl_applications = data_migration.get("ddl_applications") or []
     if ddl_applications:
         with st.expander(f"Applied DDL (views/procedures/triggers/FKs) ({len(ddl_applications)})"):
-            st.dataframe(ddl_applications, use_container_width=True, hide_index=True)
+            st.dataframe(ddl_applications, width="stretch", hide_index=True)
 
 
 def _render_validation(validation_report: dict[str, Any]) -> None:
@@ -348,7 +348,7 @@ def _render_validation(validation_report: dict[str, Any]) -> None:
         mismatch_tables = [cs for cs in checksums if cs.get("status") != "MATCH"]
         if mismatch_tables:
             with st.expander(f"Mismatched tables ({len(mismatch_tables)})"):
-                st.dataframe(mismatch_tables, use_container_width=True, hide_index=True)
+                st.dataframe(mismatch_tables, width="stretch", hide_index=True)
         else:
             st.success("✅ All tables validated successfully")
 
@@ -365,11 +365,11 @@ def _render_validation(validation_report: dict[str, Any]) -> None:
         if pending_review:
             with st.expander(f"Pending manual review ({len(pending_review)})"):
                 st.info("Low-confidence translations intentionally skipped -- not yet applied to target.")
-                st.dataframe(pending_review, use_container_width=True, hide_index=True)
+                st.dataframe(pending_review, width="stretch", hide_index=True)
         if failed:
             st.warning(f"⚠️ {len(failed)} object(s) missing/errored on target")
             with st.expander(f"Missing/errored objects ({len(failed)})"):
-                st.dataframe(failed, use_container_width=True, hide_index=True)
+                st.dataframe(failed, width="stretch", hide_index=True)
         elif not pending_review:
             st.success("✅ All views/procedures/functions/triggers/FKs present on target")
 
